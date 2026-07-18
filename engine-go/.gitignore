@@ -1,0 +1,15 @@
+# Секреты: реальный TELEGRAM_TOKEN живёт только в settings.ini (шаблон — settings.ini.example)
+settings.ini
+
+# Собранные бинарники
+kibborg-engine
+kibborg-engine.exe
+kibborg-go-engine*
+*.exe
+
+# Логи и рантайм
+*.log
+runtime/
+
+# Локальные модели (GGUF весят десятки ГБ)
+models/

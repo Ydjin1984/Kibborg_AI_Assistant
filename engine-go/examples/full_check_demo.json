@@ -1,0 +1,26 @@
+{
+  "symbol": "BTCUSDT",
+  "market": "futures",
+  "timeframes": {
+    "15m": {
+      "close": 65000,
+      "trend": "bullish",
+      "rsi14": 58,
+      "atr14": 780,
+      "change_pct": 1.8,
+      "volume": 1200000,
+      "volume_sma20": 850000,
+      "macd": { "histogram": 45 }
+    },
+    "1h": {
+      "close": 65200,
+      "trend": "bullish",
+      "rsi14": 61
+    },
+    "4h": {
+      "close": 65500,
+      "trend": "bullish",
+      "rsi14": 55
+    }
+  }
+}

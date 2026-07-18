@@ -1,0 +1,23 @@
+# Локальный конфиг и эфемерные файлы Claude Code (машинно-зависимые)
+.claude/settings.local.json
+.claude/*.lock
+
+# Секреты — реальный settings.ini с TELEGRAM_TOKEN (шаблон settings.ini.example коммитится)
+**/settings.ini
+
+# Собранные бинарники
+**/*.exe
+**/kibborg-engine
+**/kibborg-go-engine
+
+# Логи и рантайм (история диалогов, память, журнал сделок, профиль Chrome)
+**/*.log
+**/runtime/
+
+# Локальные модели (GGUF весят десятки ГБ)
+**/models/
+
+# Мусор ОС
+Thumbs.db
+desktop.ini
+.DS_Store

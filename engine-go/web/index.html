@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kibborg — панель управления</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel2: #1e2230; --border: #2a2f40;
+    --text: #e6e9f0; --muted: #8b93a7; --accent: #4f8cff; --green: #3ddc84;
+    --red: #ff5c5c; --yellow: #ffcc4d; --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 10px 18px;
+    background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; font-weight: 700; }
+  header h1 span { color: var(--accent); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+  .chip {
+    display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px;
+    background: var(--panel2); border: 1px solid var(--border); font-size: 12.5px; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--green); } .dot.warn { background: var(--yellow); } .dot.bad { background: var(--red); }
+  nav { display: flex; gap: 4px; padding: 8px 18px 0; background: var(--panel); border-bottom: 1px solid var(--border); }
+  nav button {
+    background: none; border: none; color: var(--muted); padding: 8px 16px; cursor: pointer;
+    font: inherit; font-weight: 600; border-bottom: 2px solid transparent;
+  }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  main { flex: 1; overflow: hidden; display: flex; }
+  .tab { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+  .tab.active { display: flex; }
+
+  /* Чат */
+  #messages { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 76%; padding: 10px 14px; border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.bot  { align-self: flex-start; background: var(--panel2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg.bot.err { border-color: var(--red); color: var(--red); }
+  .msg.bot code { background: #12141c; padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace; font-size: 13px; }
+  .msg.bot pre { background: #12141c; padding: 10px; border-radius: 8px; overflow-x: auto; margin: 6px 0; }
+  .msg.bot pre code { background: none; padding: 0; }
+  .msg-meta { align-self: flex-start; font-size: 11.5px; color: var(--muted); margin: -4px 0 2px 4px; font-family: Consolas, monospace; }
+  .msg-tools { align-self: flex-start; margin: -4px 0 4px 4px; }
+  .copy-btn {
+    background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px;
+    padding: 2px 10px; font-size: 12px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .copy-btn:hover { color: var(--text); border-color: var(--muted); }
+  .copy-btn.done { color: var(--green); border-color: var(--green); }
+
+  /* Окно состояния (живой индикатор скорости) */
+  #stateBar {
+    display: flex; align-items: center; gap: 14px; padding: 7px 18px;
+    background: var(--panel2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    font-size: 12.5px; color: var(--muted); flex-wrap: wrap;
+  }
+  #stateBar .live { display: flex; align-items: center; gap: 7px; font-weight: 600; color: var(--text); }
+  #stateBar .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  #stateBar.gen .pulse { background: var(--green); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  #stateBar .metric b { color: var(--text); font-variant-numeric: tabular-nums; }
+  #stateBar .sep { opacity: .4; }
+  .composer { display: flex; gap: 8px; padding: 12px 18px; background: var(--panel); border-top: 1px solid var(--border); align-items: flex-end; }
+  .composer textarea {
+    flex: 1; resize: none; background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); padding: 10px 14px; font: inherit; min-height: 44px; max-height: 160px; outline: none;
+  }
+  .composer textarea:focus { border-color: var(--accent); }
+  .icon-btn {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius);
+    width: 44px; height: 44px; font-size: 18px; cursor: pointer; flex: none;
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--muted); }
+  /* Плашка прикреплённого файла над композером */
+  #attachBar { display: none; padding: 8px 18px 0; background: var(--panel); }
+  .attach-chip {
+    display: inline-flex; align-items: center; gap: 10px; background: var(--panel2);
+    border: 1px solid var(--accent); border-radius: var(--radius); padding: 6px 10px; font-size: 13px; max-width: 100%;
+  }
+  .attach-chip img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; flex: none; }
+  .attach-chip .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+  .attach-chip .rm { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 2px; }
+  .attach-chip .rm:hover { color: var(--red); }
+  #messages.dragover { outline: 2px dashed var(--accent); outline-offset: -8px; }
+  .msg.user .att-name { display: block; font-size: 12px; opacity: .85; margin-top: 4px; }
+  .msg.user img.att-thumb { max-width: 220px; border-radius: 8px; margin-top: 6px; display: block; }
+  button.primary {
+    background: var(--accent); color: #fff; border: none; border-radius: var(--radius);
+    padding: 0 20px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  button.ghost {
+    background: none; border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius);
+    padding: 0 14px; font: inherit; cursor: pointer;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--muted); }
+
+  /* Анализ */
+  .analyze-wrap { padding: 18px; overflow-y: auto; }
+  .analyze-bar { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .analyze-bar input {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); padding: 10px 14px; font: inherit; width: 220px; outline: none; text-transform: uppercase;
+  }
+  .analyze-bar input:focus { border-color: var(--accent); }
+  .quick { display: flex; gap: 6px; margin-bottom: 14px; }
+  .quick button { padding: 5px 12px; }
+  #report {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 18px; white-space: pre-wrap; word-break: break-word; display: none; font-size: 14.5px;
+  }
+  .analyze-section-title { font-size: 12.5px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .4px; margin: 16px 0 6px; display: none; }
+  #narration {
+    background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius);
+    padding: 16px 18px; white-space: pre-wrap; word-break: break-word; display: none; font-size: 14.5px; line-height: 1.6;
+  }
+  #narration code { background: #12141c; padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace; font-size: 13px; }
+  #analyzeTools { margin-top: 8px; display: none; }
+  #reportJson { margin-top: 10px; display: none; }
+  #reportJson pre {
+    background: #12141c; border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px; overflow-x: auto; font-size: 12.5px; max-height: 380px; overflow-y: auto;
+  }
+  details summary { cursor: pointer; color: var(--muted); }
+
+  /* Статус */
+  .cards { padding: 18px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); align-content: start; overflow-y: auto; }
+  .card { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .card h3 { font-size: 12.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 6px; }
+  .card .v { font-size: 19px; font-weight: 700; }
+  .card .s { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .hint { grid-column: 1/-1; color: var(--muted); font-size: 13px; }
+  .hint code { background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🤖 Kibborg <span>панель</span></h1>
+  <div class="chips">
+    <div class="chip"><span class="dot" id="dotBrain"></span><span id="chipBrain">мозг…</span></div>
+    <div class="chip"><span class="dot" id="dotChrome"></span><span id="chipChrome">Chrome…</span></div>
+    <div class="chip"><span class="dot" id="dotWhisper"></span><span id="chipWhisper">голос…</span></div>
+  </div>
+</header>
+<nav>
+  <button class="active" data-tab="chat">💬 Чат</button>
+  <button data-tab="analyze">📊 Анализ</button>
+  <button data-tab="browser">🌐 Браузер</button>
+  <button data-tab="video">🎬 Видео</button>
+  <button data-tab="status">🩺 Статус</button>
+</nav>
+<main>
+  <section class="tab active" id="tab-chat">
+    <div id="messages"></div>
+    <div id="stateBar">
+      <span class="live"><span class="pulse"></span><span id="stateLabel">простаивает</span></span>
+      <span class="metric" id="stateLive"></span>
+      <span class="sep">│</span>
+      <span class="metric" id="stateLast">скорость появится после первого ответа</span>
+    </div>
+    <div id="attachBar"></div>
+    <div class="composer">
+      <button class="icon-btn" id="attachBtn" title="Прикрепить картинку или файл (или перетащи / вставь Ctrl+V)">📎</button>
+      <input type="file" id="fileInput" accept="image/*,.go,.py,.js,.ts,.tsx,.jsx,.rs,.c,.h,.cpp,.java,.kt,.cs,.rb,.php,.swift,.sh,.ps1,.bat,.cmd,.sql,.html,.css,.scss,.json,.yaml,.yml,.toml,.ini,.xml,.md,.csv,.txt,.log,.env,.conf" style="display:none">
+      <textarea id="input" rows="1" placeholder="Сообщение · ссылка на видео · /browser · /download · /chart+картинка…"></textarea>
+      <button class="primary" id="send">Отправить</button>
+      <button class="ghost" id="reset" title="Очистить контекст диалога">Сброс</button>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-analyze">
+    <div class="analyze-wrap">
+      <div class="analyze-bar">
+        <input id="symbol" placeholder="Тикер: BTC, ETH…" maxlength="16">
+        <button class="primary" id="run">Разбор</button>
+      </div>
+      <div class="quick">
+        <button class="ghost" data-sym="BTC">BTC</button>
+        <button class="ghost" data-sym="ETH">ETH</button>
+        <button class="ghost" data-sym="SOL">SOL</button>
+        <button class="ghost" data-sym="BNB">BNB</button>
+      </div>
+      <div class="analyze-section-title" id="reportTitle">📐 Детерминированный разбор (движок)</div>
+      <div id="report"></div>
+      <div class="analyze-section-title" id="narrationTitle">🧠 Комментарий нейросети</div>
+      <div id="narration"></div>
+      <div id="analyzeTools"><button class="copy-btn" id="copyAnalyze">📋 Копировать</button></div>
+      <div id="reportJson"><details><summary>Сырой DecisionReport (JSON)</summary><pre id="reportJsonPre"></pre></details></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-browser">
+    <div class="analyze-wrap">
+      <p class="hint" style="margin-bottom:12px;color:var(--muted);font-size:13px">
+        Тот же Browser Agent, что и <code>/browser</code> в Telegram. Chrome с
+        <code>--remote-debugging-port=9222</code>. Можно также писать в чате: <code>/browser …</code>
+      </p>
+      <div class="analyze-bar">
+        <input id="browserTask" placeholder="Задача: собери таблицу с открытой вкладки…" style="flex:1;width:auto;min-width:280px;text-transform:none">
+        <button class="primary" id="browserRun">Выполнить</button>
+      </div>
+      <div id="browserOut" style="display:none;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;white-space:pre-wrap;word-break:break-word;margin-top:12px"></div>
+      <div id="browserFiles" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-video">
+    <div class="analyze-wrap">
+      <p class="hint" style="margin-bottom:12px;color:var(--muted);font-size:13px">
+        Скачать видео с YouTube / Instagram / TikTok / X в макс. качестве (yt-dlp).
+        В чате: просто ссылка или <code>/download &lt;url&gt;</code> — то же, что в Telegram.
+      </p>
+      <div class="analyze-bar">
+        <input id="videoURL" placeholder="https://youtube.com/watch?v=… или instagram.com/reel/…" style="flex:1;width:auto;min-width:280px;text-transform:none">
+        <button class="primary" id="videoRun">Скачать</button>
+      </div>
+      <div id="videoOut" style="display:none;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;white-space:pre-wrap;word-break:break-word;margin-top:12px"></div>
+      <div id="videoFiles" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-status">
+    <div class="cards" id="cards"></div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+/* ---------- вкладки ---------- */
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $("tab-" + b.dataset.tab).classList.add("active");
+});
+
+/* ---------- мини-рендер Markdown (жирный, код, блоки) ---------- */
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function renderMd(s) {
+  // блоки кода отделяем до экранирования инлайна
+  const segs = s.split("```");
+  let html = "";
+  for (let i = 0; i < segs.length; i++) {
+    if (i % 2 === 0) {
+      html += esc(segs[i])
+        .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+        .replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    } else {
+      let body = segs[i];
+      const nl = body.indexOf("\n");
+      if (nl >= 0 && /^[\w+-]*$/.test(body.slice(0, nl).trim())) body = body.slice(nl + 1);
+      html += "<pre><code>" + esc(body) + "</code></pre>";
+    }
+  }
+  return html;
+}
+
+/* ---------- чат ---------- */
+const messages = $("messages"), input = $("input"), sendBtn = $("send");
+function bubble(cls, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + cls;
+  div.textContent = text;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  return div;
+}
+// copyText copies raw text to the clipboard with a clipboard-API → textarea fallback
+// (the fallback matters because http://127.0.0.1 is not a "secure context" in some browsers).
+async function copyText(text, btn) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    if (btn) { const t = btn.textContent; btn.textContent = "✓ Скопировано"; btn.classList.add("done");
+      setTimeout(() => { btn.textContent = t; btn.classList.remove("done"); }, 1500); }
+  } catch (e) { if (btn) btn.textContent = "✗ не вышло"; }
+}
+// addCopyButton appends a "copy" control under a bot bubble; getText returns the raw text.
+function addCopyButton(getText) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg-tools";
+  const btn = document.createElement("button");
+  btn.className = "copy-btn";
+  btn.textContent = "📋 Копировать";
+  btn.onclick = () => copyText(getText(), btn);
+  wrap.appendChild(btn);
+  messages.appendChild(wrap);
+  return wrap;
+}
+/* ---------- вложения (картинки и файлы) ---------- */
+let pendingFile = null;
+const attachBar = $("attachBar"), fileInput = $("fileInput");
+function setAttachment(file) {
+  pendingFile = file;
+  if (!file) { attachBar.style.display = "none"; attachBar.innerHTML = ""; return; }
+  const isImg = file.type.startsWith("image/");
+  const chip = document.createElement("div");
+  chip.className = "attach-chip";
+  const thumb = isImg ? '<img id="attThumb" alt="">' : '<span style="font-size:20px">📄</span>';
+  chip.innerHTML = thumb + '<span class="name">' + file.name +
+    ' · ' + Math.max(1, Math.round(file.size / 1024)) + ' КБ</span><button class="rm" title="Убрать">✕</button>';
+  attachBar.innerHTML = "";
+  attachBar.appendChild(chip);
+  attachBar.style.display = "block";
+  chip.querySelector(".rm").onclick = () => setAttachment(null);
+  if (isImg) { const u = URL.createObjectURL(file); chip.querySelector("#attThumb").src = u; }
+}
+$("attachBtn").onclick = () => fileInput.click();
+fileInput.onchange = () => { if (fileInput.files[0]) setAttachment(fileInput.files[0]); fileInput.value = ""; };
+// перетаскивание файла на область сообщений
+messages.addEventListener("dragover", e => { e.preventDefault(); messages.classList.add("dragover"); });
+messages.addEventListener("dragleave", () => messages.classList.remove("dragover"));
+messages.addEventListener("drop", e => {
+  e.preventDefault(); messages.classList.remove("dragover");
+  if (e.dataTransfer.files[0]) setAttachment(e.dataTransfer.files[0]);
+});
+// вставка картинки из буфера (Ctrl+V)
+input.addEventListener("paste", e => {
+  for (const item of e.clipboardData.items) {
+    if (item.type.startsWith("image/")) { setAttachment(item.getAsFile()); e.preventDefault(); return; }
+  }
+});
+
+async function send() {
+  const text = input.value.trim();
+  if ((!text && !pendingFile) || sendBtn.disabled) return;
+  const file = pendingFile;
+  input.value = ""; autoGrow();
+  // пузырь пользователя: текст + превью вложения
+  const ub = bubble("user", text || (file ? "📎 " + file.name : ""));
+  if (file) {
+    if (file.type.startsWith("image/")) {
+      const img = document.createElement("img"); img.className = "att-thumb";
+      img.src = URL.createObjectURL(file); ub.appendChild(img);
+    } else {
+      const n = document.createElement("span"); n.className = "att-name"; n.textContent = "📄 " + file.name; ub.appendChild(n);
+    }
+  }
+  setAttachment(null);
+  const bot = bubble("bot", "…");
+  sendBtn.disabled = true;
+  try {
+    let resp;
+    if (file) {
+      const fd = new FormData();
+      fd.append("message", text);
+      fd.append("file", file, file.name);
+      resp = await fetch("/api/chat", { method: "POST", body: fd });
+    } else {
+      resp = await fetch("/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+    }
+    if (!resp.ok) { bot.classList.add("err"); bot.textContent = "❌ " + (await resp.text()); sendBtn.disabled = false; return; }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    const handleEv = (ev) => {
+      if (ev.error) { bot.classList.add("err"); bot.textContent = "❌ " + ev.error; }
+      else if (ev.done) {
+        const finalText = ev.text || "";
+        bot.innerHTML = renderMd(finalText);
+        if (ev.files && ev.files.length) appendFileLinks(messages, ev.files);
+        if (ev.stats) {
+          const m = document.createElement("div");
+          m.className = "msg-meta";
+          m.textContent = "⚡ " + ev.stats.gen_tok_s + " ток/с · промпт " + ev.stats.prompt_tok_s +
+            " ток/с · " + ev.stats.gen_tokens + " ток за " + ev.stats.total_sec + " с";
+          messages.appendChild(m);
+        }
+        addCopyButton(() => finalText);
+      }
+      else { bot.textContent = (ev.text || "") + " ▌"; }
+      messages.scrollTop = messages.scrollHeight;
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        handleEv(JSON.parse(line));
+      }
+    }
+    // Last NDJSON object without trailing newline (or non-stream JSON body).
+    if (buf.trim()) {
+      try { handleEv(JSON.parse(buf.trim())); } catch (_) { /* ignore trailing garbage */ }
+    }
+  } catch (e) {
+    bot.classList.add("err");
+    bot.textContent = "❌ Нет связи с ботом: " + e.message;
+  }
+  sendBtn.disabled = false;
+  input.focus();
+}
+sendBtn.onclick = send;
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
+input.addEventListener("input", autoGrow);
+$("reset").onclick = async () => {
+  await fetch("/api/reset", { method: "POST" });
+  messages.innerHTML = "";
+  bubble("bot", "Контекст диалога очищен.");
+};
+
+// appendFileLinks shows downloadable artifact links under a reply (videos, clones, …).
+function appendFileLinks(parent, files) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg-tools";
+  wrap.style.display = "flex";
+  wrap.style.flexWrap = "wrap";
+  wrap.style.gap = "6px";
+  for (const f of files) {
+    if (!f.url) continue;
+    const a = document.createElement("a");
+    a.className = "copy-btn";
+    a.href = f.url;
+    a.download = f.name || "";
+    a.textContent = "⬇️ " + (f.name || "файл");
+    a.style.textDecoration = "none";
+    wrap.appendChild(a);
+  }
+  if (wrap.childNodes.length) parent.appendChild(wrap);
+}
+
+// readNdjsonStream reads NDJSON lines from a fetch Response and calls onEvent for each.
+async function readNdjsonStream(resp, onEvent) {
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      onEvent(JSON.parse(line));
+    }
+  }
+}
+
+/* ---------- браузер-агент (паритет с Telegram /browser) ---------- */
+const browserOut = $("browserOut"), browserFiles = $("browserFiles"), browserRun = $("browserRun");
+async function runBrowser() {
+  const task = $("browserTask").value.trim();
+  if (!task || browserRun.disabled) return;
+  browserRun.disabled = true;
+  browserOut.style.display = "block";
+  browserOut.textContent = "🌐 Работаю…";
+  browserFiles.innerHTML = "";
+  try {
+    const resp = await fetch("/api/browser", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task }),
+    });
+    if (!resp.ok) { browserOut.textContent = "❌ " + (await resp.text()); browserRun.disabled = false; return; }
+    await readNdjsonStream(resp, ev => {
+      if (ev.error) browserOut.textContent = "❌ " + ev.error;
+      else if (ev.done) {
+        browserOut.innerHTML = renderMd(ev.text || "");
+        browserFiles.innerHTML = "";
+        if (ev.files) appendFileLinks(browserFiles, ev.files);
+      } else if (ev.text) browserOut.textContent = ev.text;
+    });
+  } catch (e) {
+    browserOut.textContent = "❌ " + e.message;
+  }
+  browserRun.disabled = false;
+}
+browserRun.onclick = runBrowser;
+$("browserTask").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); runBrowser(); }
+});
+
+/* ---------- скачивание видео (паритет с Telegram /download) ---------- */
+const videoOut = $("videoOut"), videoFiles = $("videoFiles"), videoRun = $("videoRun");
+async function runVideo() {
+  const url = $("videoURL").value.trim();
+  if (!url || videoRun.disabled) return;
+  videoRun.disabled = true;
+  videoOut.style.display = "block";
+  videoOut.textContent = "🎬 Скачиваю…";
+  videoFiles.innerHTML = "";
+  try {
+    const resp = await fetch("/api/download_video", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    if (!resp.ok) { videoOut.textContent = "❌ " + (await resp.text()); videoRun.disabled = false; return; }
+    await readNdjsonStream(resp, ev => {
+      if (ev.error) videoOut.textContent = "❌ " + ev.error;
+      else if (ev.done) {
+        videoOut.innerHTML = renderMd(ev.text || "");
+        videoFiles.innerHTML = "";
+        if (ev.files) appendFileLinks(videoFiles, ev.files);
+      } else if (ev.text) videoOut.textContent = ev.text;
+    });
+  } catch (e) {
+    videoOut.textContent = "❌ " + e.message;
+  }
+  videoRun.disabled = false;
+}
+videoRun.onclick = runVideo;
+$("videoURL").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); runVideo(); }
+});
+
+/* ---------- анализ ---------- */
+const report = $("report"), narration = $("narration"), reportJson = $("reportJson"), runBtn = $("run");
+let lastAnalyzeText = "";
+function showAnalyzeSections(on) {
+  $("reportTitle").style.display = on ? "block" : "none";
+  report.style.display = on ? "block" : "none";
+}
+async function analyze(sym) {
+  sym = (sym || $("symbol").value).trim();
+  if (!sym) return;
+  $("symbol").value = sym.toUpperCase();
+  runBtn.disabled = true;
+  showAnalyzeSections(true);
+  report.textContent = "⏳ Считаю по свечам Binance (15m / 1h / 4h)…";
+  $("narrationTitle").style.display = "none";
+  narration.style.display = "none";
+  narration.textContent = "";
+  $("analyzeTools").style.display = "none";
+  reportJson.style.display = "none";
+  let deterministic = "", narrText = "";
+  try {
+    const resp = await fetch("/api/analyze?symbol=" + encodeURIComponent(sym));
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.error && !ev.done) { report.textContent = "❌ " + ev.error; }
+        if (ev.text !== undefined) {                 // детерминированный отчёт
+          deterministic = ev.text;
+          report.innerHTML = renderMd(ev.text);
+          if (ev.report) { $("reportJsonPre").textContent = JSON.stringify(ev.report, null, 2); reportJson.style.display = "block"; }
+        }
+        if (ev.narration !== undefined && !ev.done) { // стрим комментария нейросети
+          $("narrationTitle").style.display = "block";
+          narration.style.display = "block";
+          narrText = ev.narration;
+          narration.innerHTML = renderMd(narrText) + " ▌";
+        }
+        if (ev.done) {
+          if (ev.narration) {
+            narrText = ev.narration;
+            $("narrationTitle").style.display = "block";
+            narration.style.display = "block";
+            narration.innerHTML = renderMd(narrText);
+            if (ev.stats) {
+              const m = document.createElement("div");
+              m.className = "msg-meta"; m.style.alignSelf = "flex-start";
+              m.textContent = "⚡ " + ev.stats.gen_tok_s + " ток/с · " + ev.stats.gen_tokens + " ток за " + ev.stats.total_sec + " с";
+              narration.appendChild(m);
+            }
+          }
+          lastAnalyzeText = deterministic + (narrText ? "\n\n🧠 Комментарий нейросети:\n" + narrText : "");
+          $("analyzeTools").style.display = "block";
+        }
+      }
+    }
+  } catch (e) { report.textContent = "❌ Нет связи с ботом: " + e.message; }
+  runBtn.disabled = false;
+}
+runBtn.onclick = () => analyze();
+$("symbol").addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
+document.querySelectorAll(".quick button").forEach(b => b.onclick = () => analyze(b.dataset.sym));
+$("copyAnalyze").onclick = () => copyText(lastAnalyzeText, $("copyAnalyze"));
+
+/* ---------- статус ---------- */
+function fmtUptime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? h + " ч " + m + " мин" : m + " мин";
+}
+function setChip(dot, chip, state, text) {
+  $(dot).className = "dot " + state;
+  $(chip).textContent = text;
+}
+function card(title, value, sub) {
+  return '<div class="card"><h3>' + title + '</h3><div class="v">' + value + '</div>' +
+         (sub ? '<div class="s">' + sub + "</div>" : "") + "</div>";
+}
+function updateStateBar(a) {
+  const bar = $("stateBar");
+  if (!a) return;
+  const gen = a.phase === "generating";
+  bar.classList.toggle("gen", gen);
+  $("stateLabel").textContent = gen ? "генерация: " + (a.label || "…") : "простаивает";
+  if (gen && a.live_tok_per_sec != null) {
+    $("stateLive").innerHTML = "<b>" + a.live_tok_per_sec + "</b> ток/с · <b>" +
+      (a.live_tokens || 0) + "</b> ток · " + (a.elapsed_sec || 0) + " с";
+  } else {
+    $("stateLive").textContent = gen ? "запуск…" : "";
+  }
+  const L = a.last;
+  if (L && L.has) {
+    $("stateLast").innerHTML = "последний" + (L.label ? " (" + L.label + ")" : "") +
+      ": <b>" + L.gen_tok_s + "</b> ток/с генерация · <b>" + L.prompt_tok_s +
+      "</b> ток/с промпт · " + L.gen_tokens + " ток за " + (L.total_ms / 1000).toFixed(1) + " с";
+  }
+}
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/status");
+    const s = await r.json();
+    updateStateBar(s.activity);
+    setChip("dotBrain", "chipBrain", s.brain_ready ? "ok" : "warn", s.brain_ready ? "мозг готов" : "мозг грузится");
+    setChip("dotChrome", "chipChrome", s.chrome_tabs >= 0 ? "ok" : "bad",
+      s.chrome_tabs >= 0 ? "Chrome: " + s.chrome_tabs + " вкл." : "Chrome недоступен");
+    setChip("dotWhisper", "chipWhisper",
+      s.whisper === "ready" ? "ok" : s.whisper === "down" ? "bad" : "warn",
+      s.whisper === "ready" ? "голос готов" : s.whisper === "down" ? "whisper упал" : "голос выключен");
+    $("cards").innerHTML =
+      card("🧠 Мозг (LLM)", s.brain_ready ? "Готов" : "Грузится…", (s.model || "модель не задана") + " · порт " + s.brain_port) +
+      card("🌐 Chrome (CDP)", s.chrome_tabs >= 0 ? s.chrome_tabs + " вкладок" : "Недоступен",
+           s.chrome_tabs >= 0 ? "порт 9222" : "запусти Chrome с --remote-debugging-port=9222") +
+      card("🎙 Голос (Whisper)", s.whisper === "ready" ? "Готов" : s.whisper === "down" ? "Не отвечает" : "Выключен",
+           s.whisper === "off" ? "заполни WHISPER_* в settings.ini" : "") +
+      card("💬 Диалоги", s.chats + " чатов", "веб-чат: " + s.web_turns + " реплик") +
+      card("⏱ Аптайм", fmtUptime(s.uptime_sec), "бот запущен и работает") +
+      '<div class="hint">Интерфейс доступен только с этого компьютера (127.0.0.1). Телеграм-бот работает параллельно: ' +
+      "<code>/analyze BTC</code>, <code>/chart</code>, <code>/browser</code>.</div>";
+  } catch (e) {
+    setChip("dotBrain", "chipBrain", "bad", "бот не отвечает");
+  }
+}
+refreshStatus();
+// 1.5s keeps the live tok/s counter smooth during generation without hammering the backend.
+setInterval(refreshStatus, 1500);
+input.focus();
+</script>
+</body>
+</html>
