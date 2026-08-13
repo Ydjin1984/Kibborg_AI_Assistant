@@ -46,7 +46,8 @@ func handleLogsCommand(cfg Config, arg string) string {
 		content, source = readOwnLogs()
 		if content == "" {
 			return "📊 Свои логи пусты или недоступны (`engine.err.log`/`engine.out.log`). " +
-				"Укажи файл: `/logs имя.log` (в каталоге движка) или пришли лог файлом с подписью `/logs`."
+				"Укажи файл: `/logs имя.log` (в каталоге движка) или пришли лог файлом с подписью `/logs`.\n" +
+				"Журналы агента: `/logs runtime/hands.jsonl` (решения ворот) · `/logs runtime/tasks.jsonl` (задачи)."
 		}
 	} else {
 		path, err := safeEnginePath(arg)

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 720" role="img" aria-label="Четыре слоя агента Kibborg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#171a23"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4f8cff"/>
+      <stop offset="1" stop-color="#3ddc84"/>
+    </linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".35"/>
+    </filter>
+  </defs>
+  <rect width="1100" height="720" rx="24" fill="url(#bg)"/>
+  <text x="56" y="56" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="26" font-weight="700">Как устроен запрос</text>
+  <text x="56" y="84" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="15">Любой вход — текст, голос, картинка, видео или слэш — идёт по одной трубе</text>
+
+  <g filter="url(#soft)">
+    <rect x="56" y="118" width="988" height="70" rx="16" fill="#1e2230" stroke="#2a2f40"/>
+  </g>
+  <text x="80" y="148" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="13">ВХОД</text>
+  <text x="80" y="170" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="16">Telegram или Web → Task (taskID, 10 минут) → слой 0: если «этот» без предмета — переспрос</text>
+
+  <line x1="550" y1="188" x2="550" y2="214" stroke="#4f8cff" stroke-width="3"/>
+
+  <g filter="url(#soft)">
+    <rect x="56" y="214" width="988" height="92" rx="16" fill="#1e2230" stroke="#4f8cff"/>
+  </g>
+  <rect x="72" y="232" width="44" height="44" rx="10" fill="#4f8cff"/>
+  <text x="86" y="261" fill="#0f1117" font-family="Segoe UI, system-ui, sans-serif" font-size="20" font-weight="700">1</text>
+  <text x="132" y="248" fill="#4f8cff" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700">СЛОЙ 1 · ДИСПЕТЧЕР</text>
+  <text x="132" y="272" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="16">Инструментов нет. Модель возвращает JSON: packs, plan, confirm, summary</text>
+  <text x="132" y="294" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="13">Максимум 3 пака сразу. Это маршрутизация, не безопасность.</text>
+
+  <line x1="550" y1="306" x2="550" y2="332" stroke="#4f8cff" stroke-width="3"/>
+
+  <g filter="url(#soft)">
+    <rect x="56" y="332" width="988" height="80" rx="16" fill="#1e2230" stroke="#2a2f40"/>
+  </g>
+  <rect x="72" y="350" width="44" height="44" rx="10" fill="#3ddc84"/>
+  <text x="86" y="379" fill="#0f1117" font-family="Segoe UI, system-ui, sans-serif" font-size="20" font-weight="700">2</text>
+  <text x="132" y="366" fill="#3ddc84" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700">СЛОЙ 2 · СБОР РУК</text>
+  <text x="132" y="390" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="16">Подключаются схемы выбранных паков + всегда доступный request_pack</text>
+
+  <line x1="550" y1="412" x2="550" y2="438" stroke="#4f8cff" stroke-width="3"/>
+
+  <g filter="url(#soft)">
+    <rect x="56" y="438" width="988" height="104" rx="16" fill="#1e2230" stroke="#ffcc4d"/>
+  </g>
+  <rect x="72" y="456" width="44" height="44" rx="10" fill="#ffcc4d"/>
+  <text x="86" y="485" fill="#0f1117" font-family="Segoe UI, system-ui, sans-serif" font-size="20" font-weight="700">3</text>
+  <text x="132" y="472" fill="#ffcc4d" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700">СЛОЙ 3 · ИСПОЛНЕНИЕ + ВОРОТА</text>
+  <text x="132" y="496" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="16">tool_call → guardToolCall → allow / ask / deny / hard_block</text>
+  <text x="132" y="518" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="13">Ворота стоят на фактическом вызове. Диспетчер не граница безопасности.</text>
+
+  <line x1="550" y1="542" x2="550" y2="568" stroke="#4f8cff" stroke-width="3"/>
+
+  <g filter="url(#soft)">
+    <rect x="56" y="568" width="988" height="92" rx="16" fill="#1e2230" stroke="#2a2f40"/>
+  </g>
+  <rect x="72" y="586" width="44" height="44" rx="10" fill="#ff5c5c"/>
+  <text x="86" y="615" fill="#ffffff" font-family="Segoe UI, system-ui, sans-serif" font-size="20" font-weight="700">4</text>
+  <text x="132" y="602" fill="#ff5c5c" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700">СЛОЙ 4 · ОТВЕТ</text>
+  <text x="132" y="626" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="16">Первая строка — summary. Дальше лента статусов плана и обычный ответ человеку</text>
+  <text x="132" y="648" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="13">Провалившиеся действия код сам приписывает к ответу — модель не может сделать вид, что «всё ок».</text>
+</svg>

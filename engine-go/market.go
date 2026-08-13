@@ -33,7 +33,7 @@ func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
 		symbol, interval, limit)
 	resp, err := marketHTTP.Get(u)
 	if err != nil {
-		return nil, fmt.Errorf("Binance недоступен: %w", err)
+		return nil, fmt.Errorf("binance недоступен: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -45,12 +45,12 @@ func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
 		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Code == -1121 {
 			return nil, fmt.Errorf("тикер %s не найден на Binance (spot)", symbol)
 		}
-		return nil, fmt.Errorf("Binance HTTP %d: %s", resp.StatusCode, capLogTail(string(raw)))
+		return nil, fmt.Errorf("binance HTTP %d: %s", resp.StatusCode, capLogTail(string(raw)))
 	}
 	// Each kline: [openTime, "open", "high", "low", "close", "volume", closeTime, ...]
 	var rows [][]any
 	if err := json.Unmarshal(raw, &rows); err != nil {
-		return nil, fmt.Errorf("Binance вернул не-JSON: %w", err)
+		return nil, fmt.Errorf("binance вернул не-JSON: %w", err)
 	}
 	out := make([]candle, 0, len(rows))
 	for _, k := range rows {
@@ -65,7 +65,7 @@ func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
 		})
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("Binance вернул пустые данные по %s %s", symbol, interval)
+		return nil, fmt.Errorf("binance вернул пустые данные по %s %s", symbol, interval)
 	}
 	// Binance returns the still-forming current candle as the last element. Drop it so every
 	// indicator (RSI/ATR/MACD/trend/volume/change_pct) is computed only from CLOSED candles.

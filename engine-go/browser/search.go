@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,8 +25,9 @@ type SearchResult struct {
 const searchUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 // WebSearch queries DuckDuckGo and returns up to limit results. It is independent of the
-// CDP session (a plain HTTP call), so it works before any tab is open.
-func WebSearch(query string, limit int) ([]SearchResult, error) {
+// CDP session (a plain HTTP call), so it works before any tab is open. ctx is the task
+// context: /stop aborts the in-flight request instead of waiting out the HTTP timeout.
+func WebSearch(ctx context.Context, query string, limit int) ([]SearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("пустой поисковый запрос")
@@ -36,7 +38,10 @@ func WebSearch(query string, limit int) ([]SearchResult, error) {
 	if limit > 25 {
 		limit = 25 // the tool description promises "максимум 25", so clamp, don't reset
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://html.duckduckgo.com/html/?q="+url.QueryEscape(query), nil)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://html.duckduckgo.com/html/?q="+url.QueryEscape(query), nil)
 	if err != nil {
 		return nil, err
 	}

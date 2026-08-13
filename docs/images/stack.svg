@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 420" role="img" aria-label="Стек Kibborg">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f1117"/>
+      <stop offset="1" stop-color="#171a23"/>
+    </linearGradient>
+  </defs>
+  <rect width="1100" height="420" rx="24" fill="url(#bg2)"/>
+  <text x="56" y="52" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="24" font-weight="700">Три части на одном компьютере</text>
+  <text x="56" y="78" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">Облако не нужно. Модель, движок и интерфейсы крутятся локально.</text>
+
+  <rect x="56" y="110" width="300" height="250" rx="18" fill="#1e2230" stroke="#4f8cff"/>
+  <text x="80" y="148" fill="#4f8cff" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700">1. МОЗГ</text>
+  <text x="80" y="180" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="18" font-weight="700">llama-server</text>
+  <text x="80" y="208" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">Qwen3.6-35B-A3B + зрение</text>
+  <text x="80" y="236" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">порт 8083</text>
+  <text x="80" y="264" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">думает и выбирает инструменты</text>
+  <text x="80" y="292" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">числа сама не выдумывает</text>
+
+  <rect x="400" y="110" width="300" height="250" rx="18" fill="#1e2230" stroke="#3ddc84"/>
+  <text x="424" y="148" fill="#3ddc84" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700">2. ДВИЖОК</text>
+  <text x="424" y="180" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="18" font-weight="700">kibborg-go-engine</text>
+  <text x="424" y="208" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">агент, ворота, трейдинг</text>
+  <text x="424" y="236" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">порты 8002 и 8090</text>
+  <text x="424" y="264" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">режет видео, пишет файлы</text>
+  <text x="424" y="292" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">считает рынок по Binance</text>
+
+  <rect x="744" y="110" width="300" height="250" rx="18" fill="#1e2230" stroke="#ffcc4d"/>
+  <text x="768" y="148" fill="#ffcc4d" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700">3. КАНАЛЫ</text>
+  <text x="768" y="180" fill="#e6e9f0" font-family="Segoe UI, system-ui, sans-serif" font-size="18" font-weight="700">Telegram + Web</text>
+  <text x="768" y="208" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">один и тот же набор рук</text>
+  <text x="768" y="236" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">чат, голос, картинки, видео</text>
+  <text x="768" y="264" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">браузер, рабочий стол, рынок</text>
+  <text x="768" y="292" fill="#8b93a7" font-family="Segoe UI, system-ui, sans-serif" font-size="14">рубильник рук общий</text>
+</svg>

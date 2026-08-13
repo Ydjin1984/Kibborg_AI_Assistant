@@ -14,12 +14,12 @@ echo ============================================================
 echo   KIBBORG Go Engine - МЕНЮ / ДАШБОРД
 echo ============================================================
 echo/
-echo 1. Скачать рекомендованные модели (Qwen + Gemma под твоё железо)
+echo 1. Скачать рекомендованную модель (Qwen3.6-35B-A3B + mmproj)
 echo 2. Изменить глобальные настройки (путь к модели, порты, параметры llama и т.д. — именно так переключаешь модели!)
 echo 3. Показать текущие настройки
 echo 4. Собрать Go-бинарник
-echo 5. Запустить полный стек (Мозг + Go Engine)
-echo 6. Остановить полный стек
+echo 5. Запустить стек (перезапуск engine; brain остаётся тёплым, если уже в VRAM)
+echo 6. Остановить полный стек (engine + llama-server)
 echo 7. Запустить Chrome с отладкой (порт 9222) — для команды /browser
 echo 0. Выход
 echo/
@@ -29,8 +29,8 @@ if "%choice%"=="1" goto Download
 if "%choice%"=="2" goto Settings
 if "%choice%"=="3" goto ShowSettings
 if "%choice%"=="4" goto Build
-if "%choice%"=="5" call Start.cmd
-if "%choice%"=="6" call Stop.cmd
+if "%choice%"=="5" call "%~dp0Start.cmd"
+if "%choice%"=="6" call "%~dp0Stop.cmd"
 if "%choice%"=="7" goto ChromeDebug
 if "%choice%"=="0" exit
 
@@ -39,10 +39,11 @@ goto Menu
 
 :Download
 echo/
-echo Скачиваю рекомендованные модели (Qwen3.6-35B UD-IQ4_XS + mmproj + Gemma)...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "pip install -U -q huggingface_hub; hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-IQ4_XS.gguf --local-dir models\brain\Qwen3.6-35B-A3B; hf download unsloth/Qwen3.6-35B-A3B-GGUF mmproj-BF16.gguf --local-dir models\vision; hf download bartowski/google_gemma-4-26B-A4B-it-GGUF google_gemma-4-26B-A4B-it-IQ4_XS.gguf --local-dir models\brain\Gemma4-26B-A4B"
+echo Скачиваю рекомендованную модель:
+echo   - Qwen3.6-35B-A3B UD-IQ4_XS + mmproj
+powershell -NoProfile -ExecutionPolicy Bypass -Command "pip install -U -q huggingface_hub; hf download unsloth/Qwen3.6-35B-A3B-GGUF Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-BF16.gguf --local-dir models\brain\Qwen3.6-35B-A3B"
 echo/
-echo Скачивание завершено. Укажи MODEL_PATH и MMPROJ_PATH в settings.ini, чтобы выбрать нужную.
+echo Готово. Default в settings.ini: Qwen3.6-35B-A3B.
 pause
 goto Menu
 
@@ -59,10 +60,8 @@ powershell -NoProfile -Command @"
 # После изменений перезапусти стек.
 
 # === МОДЕЛЬ МОЗГА (llama-server) ===
-MODEL_PATH=models\brain\Gemma4-26B-A4B\google_gemma-4-26B-A4B-it-IQ4_XS.gguf
-
-# Опциональный mmproj для зрения (Qwen и т.п.). Оставь пустым для Gemma или текстовых моделей.
-MMPROJ_PATH=
+MODEL_PATH=models\brain\Qwen3.6-35B-A3B\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+MMPROJ_PATH=models\brain\Qwen3.6-35B-A3B\mmproj-BF16.gguf
 
 # === ИСПОЛНЯЕМЫЙ ФАЙЛ LLAMA-SERVER (ОБЯЗАТЕЛЬНО) ===
 # Положи llama-server.exe (и его .dll) сюда ИЛИ укажи полный путь к своей сборке.
@@ -70,16 +69,16 @@ LLAMA_SERVER=.\llama-server.exe
 # Пример: LLAMA_SERVER=D:\llama.cpp\cuda-bin-b9550\llama-server.exe
 
 # === ПОРТЫ ===
-PORT_BRAIN=8080
+PORT_BRAIN=8083
 PORT_ENGINE=8002
 
 # === ПАРАМЕТРЫ LLAMA-SERVER (подбери под железо) ===
 LLAMA_THREADS=28
 LLAMA_CTX_SIZE=32768
 LLAMA_GPU_LAYERS=99
-# Для двух GPU:
-# LLAMA_TENSOR_SPLIT=0.5,0.5
-# LLAMA_MAIN_GPU=0
+# Qwen 35B на две 3060:
+LLAMA_TENSOR_SPLIT=0.35,0.65
+LLAMA_MAIN_GPU=0
 "@ | Out-File -FilePath settings.ini -Encoding UTF8
 
 :EditSettings
@@ -95,7 +94,7 @@ echo Текущие настройки:
 if exist settings.ini (
     type settings.ini
 ) else (
-    echo Нет settings.ini — используются значения по умолчанию (Gemma4 только мозг).
+    echo Нет settings.ini — используются значения по умолчанию (Qwen3.6-35B-A3B).
 )
 echo/
 pause
@@ -103,12 +102,12 @@ goto Menu
 
 :Build
 echo/
-echo Сборка Go-бинарника (kibborg-go-engine.exe)...
-go build -buildvcs=false -o kibborg-go-engine.exe .
+echo Линт + сборка Go-бинарника (build.cmd → gofmt/vet/staticcheck/build)...
+call "%~dp0build.cmd"
 if %ERRORLEVEL% EQU 0 (
     echo Сборка успешна!
 ) else (
-    echo Сборка не удалась. Убедись, что Go установлен.
+    echo Сборка/линт не прошли. Исправь замечания линтера и повтори.
 )
 pause
 goto Menu

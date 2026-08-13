@@ -19,8 +19,26 @@ const (
 
 // enableCaptureDomains turns on the CDP Network domain so request/response/websocket events
 // start flowing to onCDPEvent. Called once per attach (see Session.attach).
+// captureBufferBytes ограничивает буфер тел ответов, который Chrome держит РАДИ НАС, пока
+// включён домен Network.
+//
+// По умолчанию Chrome не ограничивает его почти ничем. На статичной странице это незаметно, а
+// на живом веб-приложении с непрерывным потоком (Telegram Web: вебсокеты, медиа, воркеры)
+// буфер растёт, пока рендерер не падает — а с ним и весь браузер, если вкладка была
+// единственной. Ровно это и выглядело как «Chrome умирает, стоит агенту подключиться»:
+// example.com переживал подключение спокойно, а Telegram Web валил браузер каждый раз.
+//
+// 8 МБ на всё и 2 МБ на один ответ: get_response_body по-прежнему отдаёт нормальные JSON-ответы
+// API, а поток видео просто не копится.
+const (
+	captureBufferBytes   = 8 << 20
+	captureResourceBytes = 2 << 20
+)
+
 func enableCaptureDomains() chromedp.Action {
-	return network.Enable()
+	return network.Enable().
+		WithMaxTotalBufferSize(captureBufferBytes).
+		WithMaxResourceBufferSize(captureResourceBytes)
 }
 
 // onCDPEvent is the single listener installed on the page context. It records network and
@@ -80,6 +98,29 @@ func (s *Session) recordWS(m WSMessage) {
 		s.wsFrames = s.wsFrames[len(s.wsFrames)-maxWSFrames:]
 	}
 }
+
+// EnableNetworkCapture turns network recording on for the current tab and reports whether it
+// had to be switched on just now (in which case the buffers are empty by definition).
+//
+// Перехват сети больше не включается при подключении к вкладке: на живом веб-приложении он
+// роняет рендерер (см. комментарий в Session.attach). Поэтому его включают инструменты,
+// которым он реально нужен, — и честно сообщают, что запись начинается с этого момента.
+func (s *Session) EnableNetworkCapture() (justEnabled bool, err error) {
+	s.actMu.Lock()
+	defer s.actMu.Unlock()
+	if s.netEnabled {
+		return false, nil
+	}
+	if err := s.ensureNetworkCapture(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// networkJustEnabledNote is what the model is told instead of an empty (and misleading) list.
+const networkJustEnabledNote = "Перехват сети включён только что — до этого момента запросы не " +
+	"записывались, поэтому список пуст. Повтори действие на странице (или перезагрузи её через " +
+	"open_url) и спроси снова: теперь всё будет записано."
 
 // Requests returns a snapshot of captured network requests. A non-empty filter keeps only
 // requests whose resource type matches case-insensitively (e.g. "xhr", "fetch", "document").

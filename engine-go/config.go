@@ -11,25 +11,43 @@ import (
 // Config is the minimal set of values the LLM-chat bot needs, read from settings.ini
 // (so the user edits settings.ini, not code). Env vars override where noted.
 type Config struct {
-	LlamaExe      string
-	ModelPath     string
-	MmprojPath    string
-	BrainPort     int
-	CtxSize       int
-	GpuLayers     int
-	TensorSplit   string // "0.55,0.45" — доля модели на каждый GPU (по индексу). Пусто = авто.
-	MainGpu       int    // GPU для KV-кэша/compute-буферов. -1 = не задавать (дефолт llama.cpp).
+	LlamaExe    string
+	ModelPath   string
+	MmprojPath  string
+	BrainPort   int
+	CtxSize     int
+	GpuLayers   int
+	TensorSplit string // "0.45,0.55" — доля модели на каждый GPU (по индексу). Пусто = авто.
+	MainGpu     int    // GPU для KV-кэша/compute-буферов. -1 = не задавать (дефолт llama.cpp).
+	// Device: --device (напр. CUDA1) — жёстко на одну карту; пусто = все GPU / tensor-split.
+	// Qwen 35B: DEVICE пустой + TENSOR_SPLIT (обе 3060).
+	Device string
+	// CacheTypeK/V: тип KV-кэша (f16 по умолчанию llama.cpp). q8_0 экономит VRAM/bandwidth
+	// на 12 GB картах и часто даёт +decode tok/s. Пусто = не передавать флаг.
+	CacheTypeK    string
+	CacheTypeV    string
 	Threads       int
+	Parallel      int    // llama-server --parallel (слоты). 0/пусто = 1 (скорость). 4+ жрёт VRAM.
+	Reasoning     string // llama-server --reasoning: off|on|auto. Пусто = off (без thinking).
 	TelegramToken string
 	TelegramID    string
 
-	// Голос (распознавание речи через whisper.cpp server). Пустые пути = голос выключен.
+	// Голос: TypeWhisper (primary) → whisper.cpp (fallback). Без обоих — голос выключен.
+	// TypeWhisper: системная диктовка + HTTP API (по умолчанию :8978). Пустой URL =
+	// auto-discover из %LOCALAPPDATA%\TypeWhisper\api-discovery.json, затем 127.0.0.1:8978.
+	TypeWhisperURL   string // например http://127.0.0.1:8978; "off" = не использовать
+	TypeWhisperToken string // если в TypeWhisper включён Require API Token
+	// whisper.cpp server (fallback / standalone). Пустые пути = не использовать.
 	WhisperExe   string // путь к whisper-server.exe из сборки whisper.cpp
 	WhisperModel string // путь к ggml-модели whisper (например ggml-base.bin)
 	WhisperPort  int
 	FfmpegPath   string // путь к ffmpeg; пусто = искать в PATH
 
 	WebPort int // локальный веб-интерфейс (127.0.0.1); 0 = выключен
+
+	// HandsRoots: дополнительные каталоги, где агент пишет/удаляет без подтверждения
+	// (через ; или ,). Проект, Desktop и engine-go/runtime разрешены всегда (ТЗ §6.1).
+	HandsRoots string
 
 	StopBrainOnExit bool // гасить запущенный нами llama-server при выходе бота
 
@@ -74,21 +92,29 @@ func loadConfig(iniPath string) Config {
 		LlamaExe:      kv["LLAMA_SERVER"],
 		ModelPath:     kv["MODEL_PATH"],
 		MmprojPath:    kv["MMPROJ_PATH"],
-		BrainPort:     atoiDefault(kv["PORT_BRAIN"], 8080),
+		BrainPort:     atoiDefault(kv["PORT_BRAIN"], 8083),
 		CtxSize:       atoiDefault(kv["LLAMA_CTX_SIZE"], 32768),
 		GpuLayers:     atoiDefault(kv["LLAMA_GPU_LAYERS"], 99),
 		TensorSplit:   strings.TrimSpace(kv["LLAMA_TENSOR_SPLIT"]),
 		MainGpu:       atoiDefault(kv["LLAMA_MAIN_GPU"], -1),
+		Device:        strings.TrimSpace(kv["LLAMA_DEVICE"]),
+		CacheTypeK:    strings.TrimSpace(kv["LLAMA_CACHE_TYPE_K"]),
+		CacheTypeV:    strings.TrimSpace(kv["LLAMA_CACHE_TYPE_V"]),
 		Threads:       atoiDefault(kv["LLAMA_THREADS"], 28),
+		Parallel:      atoiDefault(kv["LLAMA_PARALLEL"], 1),
+		Reasoning:     strings.ToLower(strings.TrimSpace(kv["LLAMA_REASONING"])),
 		TelegramToken: kv["TELEGRAM_TOKEN"],
 		TelegramID:    kv["TELEGRAM_ID"],
 
-		WhisperExe:   kv["WHISPER_SERVER"],
-		WhisperModel: kv["WHISPER_MODEL"],
-		WhisperPort:  atoiDefault(kv["PORT_WHISPER"], 8081),
-		FfmpegPath:   kv["FFMPEG"],
+		TypeWhisperURL:   strings.TrimSpace(kv["TYPEWHISPER_URL"]),
+		TypeWhisperToken: strings.TrimSpace(kv["TYPEWHISPER_TOKEN"]),
+		WhisperExe:       kv["WHISPER_SERVER"],
+		WhisperModel:     kv["WHISPER_MODEL"],
+		WhisperPort:      atoiDefault(kv["PORT_WHISPER"], 8081),
+		FfmpegPath:       kv["FFMPEG"],
 
-		WebPort: atoiDefault(kv["PORT_WEB"], 8090),
+		WebPort:    atoiDefault(kv["PORT_WEB"], 8090),
+		HandsRoots: strings.TrimSpace(kv["AGENT_HANDS_ROOTS"]),
 
 		StopBrainOnExit: boolDefault(kv["STOP_BRAIN_ON_EXIT"], false),
 
@@ -121,11 +147,19 @@ func loadConfig(iniPath string) Config {
 	if v := strings.TrimSpace(os.Getenv("TELEGRAM_ID")); v != "" {
 		cfg.TelegramID = v
 	}
+	if v := strings.TrimSpace(os.Getenv("AGENT_HANDS_ROOTS")); v != "" {
+		cfg.HandsRoots = v
+	}
 
-	// Resolve a relative model path against the engine-go directory.
-	if cfg.ModelPath != "" && !filepath.IsAbs(cfg.ModelPath) {
-		if wd, err := os.Getwd(); err == nil {
+	// Resolve relative model / mmproj paths against the engine-go directory.
+	if wd, err := os.Getwd(); err == nil {
+		if cfg.ModelPath != "" && !filepath.IsAbs(cfg.ModelPath) {
 			cfg.ModelPath = filepath.Join(wd, cfg.ModelPath)
+		}
+		mp := strings.TrimSpace(cfg.MmprojPath)
+		if mp != "" && !strings.EqualFold(mp, "auto") && !strings.EqualFold(mp, "off") &&
+			!strings.EqualFold(mp, "none") && !filepath.IsAbs(mp) {
+			cfg.MmprojPath = filepath.Join(wd, mp)
 		}
 	}
 	return cfg

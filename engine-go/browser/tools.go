@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"fmt"
 	"io"
 	neturl "net/url"
@@ -16,96 +17,270 @@ import (
 // function tool, and Dispatch routes a model tool-call to the matching Session method.
 // Results are returned as compact strings (usually JSON) that go straight back to the model.
 
-// Tools returns the full tool catalog advertised to the model.
-func (s *Session) Tools() []ToolSpec {
+// ===== Pack catalogs (ТЗ §5) =====
+//
+// The model never sees the whole catalog at once: the dispatcher picks packs and only those
+// schemas are advertised. Descriptions are deliberately terse — TestPackSchemaBudget caps the
+// worst-case union at 12 000 chars BEFORE the chat template's ~3× expansion.
+
+// ToolsWeb is the `web` pack: search + read the open internet, no Chrome needed.
+func (s *Session) ToolsWeb() []ToolSpec {
 	return []ToolSpec{
-		// ---- web search ----
-		tool("web_search", "Поиск в интернете (DuckDuckGo): вернёт список результатов (заголовок, URL, сниппет). Дальше открой нужную ссылку через open_url. Не требует запущенного Chrome.", obj(props{
-			"query": str("Поисковый запрос"),
-			"limit": intp("Сколько результатов вернуть (по умолчанию 10, максимум 25)"),
+		tool("web_search", "Поиск в вебе.", obj(props{
+			"query": str(""),
+			"limit": intp(""),
 		}, "query")),
-
-		// ---- tabs / navigation ----
-		tool("list_tabs", "Список уже открытых вкладок Chrome (индекс, заголовок, URL). Начинай с этого, чтобы понять, с чем работаешь.", obj(nil)),
-		tool("open_url", "Открыть URL в текущей вкладке (или в новой, если new_tab=true).", obj(props{
-			"url":     str("Адрес страницы"),
-			"new_tab": boolp("Открыть в новой вкладке вместо текущей"),
+		tool("semantic_search", "Смысловой поиск.", obj(props{
+			"query": str(""),
+			"limit": intp(""),
+		}, "query")),
+		tool("read_url", "Страница как текст.", obj(props{
+			"url": str(""),
 		}, "url")),
-		tool("switch_tab", "Переключиться на другую открытую вкладку по индексу или по подстроке URL/заголовка.", obj(props{
-			"index": intp("0-based индекс вкладки из list_tabs"),
-			"match": str("Подстрока URL или заголовка"),
-		})),
-		tool("close_page", "Закрыть вкладку по индексу (или текущую, если индекс не задан).", obj(props{
-			"index": intp("Индекс вкладки из list_tabs; не задан = текущая"),
-		})),
-
-		// ---- actions ----
-		tool("click_element", "Кликнуть по элементу (CSS-селектор).", obj(props{"selector": str("CSS-селектор")}, "selector")),
-		tool("type_text", "Ввести текст в поле (CSS-селектор). clear=true очищает поле перед вводом.", obj(props{
-			"selector": str("CSS-селектор поля ввода"),
-			"text":     str("Текст для ввода"),
-			"clear":    boolp("Очистить поле перед вводом"),
-		}, "selector", "text")),
-		tool("scroll_page", "Прокрутить страницу: amount=пиксели (вниз), либо to='bottom'/'top'. С selector — прокрутить к элементу.", obj(props{
-			"selector": str("CSS-селектор элемента, к которому прокрутить (необязательно)"),
-			"to":       str("'bottom' или 'top'"),
-			"amount":   intp("Пиксели прокрутки вниз (по умолчанию 600)"),
-		})),
-		tool("select_option", "Выбрать значение в <select> по value или видимому тексту опции.", obj(props{
-			"selector": str("CSS-селектор <select>"),
-			"value":    str("value или текст опции"),
-		}, "selector", "value")),
-		tool("submit_form", "Отправить форму (CSS-селектор формы или её элемента; по умолчанию первая form).", obj(props{"selector": str("CSS-селектор формы")})),
-		tool("upload_file", "Загрузить локальные файлы в input[type=file].", obj(props{
-			"selector": str("CSS-селектор file-input (по умолчанию input[type=file])"),
-			"paths":    arrp("Локальные пути к файлам"),
-		}, "paths")),
-		tool("drag_element", "Перетащить элемент (источник → цель), best-effort HTML5 drag-and-drop.", obj(props{
-			"from": str("CSS-селектор источника"),
-			"to":   str("CSS-селектор цели"),
-		}, "from", "to")),
-
-		// ---- DOM / data ----
-		tool("analyze_dom", "Структурный обзор текущей страницы: заголовок, заголовки h1-h3, счётчики ссылок/картинок/форм/таблиц. Хорошая отправная точка.", obj(nil)),
-		tool("get_html", "Получить outerHTML элемента (или всей страницы, если selector пуст).", obj(props{"selector": str("CSS-селектор (необязательно)")})),
-		tool("get_text", "Получить видимый текст элемента (или body).", obj(props{"selector": str("CSS-селектор (необязательно)")})),
-		tool("get_attributes", "Получить атрибуты первого элемента по селектору.", obj(props{"selector": str("CSS-селектор")}, "selector")),
-		tool("extract_links", "Собрать все ссылки страницы (текст + абсолютный href).", obj(nil)),
-		tool("extract_images", "Собрать все изображения страницы (абсолютный src + alt).", obj(nil)),
-		tool("extract_table", "Извлечь таблицы. Без index — список таблиц (заголовки, число строк). С index+format — таблица в формате json/records/csv/markdown.", obj(props{
-			"index":  intp("Индекс таблицы (из списка)"),
-			"format": str("json | records | csv | markdown"),
-		})),
-		tool("extract_forms", "Описать формы страницы (action, method, поля) — чтобы найти форму входа/поиска.", obj(nil)),
-		tool("extract_json", "Извлечь встроенный JSON: <script type=application/json>, JSON-LD или по своему селектору.", obj(props{"selector": str("CSS-селектор источника JSON (необязательно)")})),
-		tool("get_storage", "Прочитать localStorage или sessionStorage. type='local'|'session'.", obj(props{"type": str("'local' или 'session'")}, "type")),
-		tool("get_cookies", "Прочитать cookies текущей страницы.", obj(nil)),
-
-		// ---- network ----
-		tool("get_network_requests", "Захваченные сетевые запросы (URL, метод, тип, статус). filter — по типу ресурса, напр. 'xhr', 'fetch', 'document'.", obj(props{"filter": str("Подстрока типа ресурса: xhr/fetch/document/script…")})),
-		tool("get_websocket_messages", "Захваченные кадры WebSocket (направление, payload).", obj(nil)),
-		tool("get_response_body", "Тело ответа по request_id (взять из get_network_requests). Работает, пока ответ ещё в буфере.", obj(props{"request_id": str("RequestID из get_network_requests")}, "request_id")),
-
-		// ---- files / clone / screenshot / video ----
-		tool("download_file", "Скачать файл по прямому URL на диск (runtime/browser). Относительный URL резолвится к текущей странице.", obj(props{"url": str("Прямой URL файла")}, "url")),
-		tool("download_video", "Скачать видео с YouTube / Instagram / TikTok / X и т.п. в максимальном доступном качестве (yt-dlp). Не требует Chrome. Вернёт путь к файлу.", obj(props{
-			"url": str("Ссылка на видео (youtube.com, youtu.be, instagram.com/reel/…, tiktok, …)"),
+		tool("http_get", "HTTP GET (API/JSON).", obj(props{
+			"url": str(""),
 		}, "url")),
-		tool("clone_website", "Клонировать текущую страницу офлайн (HTML/CSS/JS/img/шрифты/svg) с перелинковкой в локальные пути.", obj(props{"dir": str("Каталог назначения (необязательно)")})),
-		tool("capture_screenshot", "СКРИНШОТ — только если пользователь явно просит визуальный анализ. selector — элемент, full_page — вся страница.", obj(props{
-			"selector":  str("CSS-селектор элемента (необязательно)"),
-			"full_page": boolp("Снять всю прокручиваемую страницу"),
+		tool("github_search", "Поиск на GitHub.", obj(props{
+			"query": str(""),
+			"kind":  str("repos|code|issues|commits"),
+			"limit": intp(""),
+		}, "query")),
+		tool("youtube_transcript", "Субтитры видео.", obj(props{
+			"url":  str(""),
+			"lang": str("ru,en"),
+		}, "url")),
+		tool("agent_reach_doctor", "Статус Agent Reach.", obj(props{
+			"json": boolp(""),
+		})),
+		tool("agent_reach", "CLI agent-reach.", obj(props{
+			"args": arrp(""),
+		}, "args")),
+	}
+}
+
+// ToolsBrowserRead is the `browser.read` pack: tabs, navigation and every read-only view of
+// the live Chrome page (DOM, network, screenshot).
+func (s *Session) ToolsBrowserRead() []ToolSpec {
+	return []ToolSpec{
+		tool("list_tabs", "Вкладки Chrome.", obj(nil)),
+		tool("open_url", "Открыть URL.", obj(props{
+			"url":     str(""),
+			"new_tab": boolp(""),
+		}, "url")),
+		tool("switch_tab", "Сменить вкладку.", obj(props{
+			"index": intp("из list_tabs"),
+			"match": str("часть URL/заголовка"),
+		})),
+		tool("get_text", "Текст страницы.", obj(props{
+			"selector": str("CSS"),
+		})),
+		tool("get_html", "outerHTML страницы.", obj(props{"selector": str("CSS")})),
+		tool("analyze_dom", "Обзор DOM.", obj(nil)),
+		tool("get_attributes", "Атрибуты элемента.", obj(props{"selector": str("")}, "selector")),
+		tool("extract_links", "Ссылки.", obj(nil)),
+		tool("extract_images", "Картинки.", obj(nil)),
+		tool("extract_table", "Таблицы.", obj(props{
+			"index":  intp(""),
+			"format": str("json|csv|markdown"),
+		})),
+		tool("extract_forms", "Формы.", obj(nil)),
+		tool("extract_json", "Встроенный JSON.", obj(props{"selector": str("CSS")})),
+		tool("get_storage", "localStorage/sessionStorage.", obj(props{"type": str("local|session")}, "type")),
+		tool("get_cookies", "Cookies.", obj(nil)),
+		tool("get_network_requests", "Сетевые запросы.", obj(props{"filter": str("xhr|fetch|document")})),
+		tool("get_websocket_messages", "Кадры WebSocket.", obj(nil)),
+		tool("get_response_body", "Тело ответа.", obj(props{"request_id": str("")}, "request_id")),
+		tool("download_file", "Скачать файл по URL.", obj(props{"url": str("")}, "url")),
+		tool("clone_website", "Офлайн-клон страницы.", obj(props{"dir": str("")})),
+		tool("capture_screenshot", "Скриншот (по просьбе).", obj(props{
+			"selector":  str("CSS"),
+			"full_page": boolp(""),
 		})),
 	}
+}
+
+// ToolsBrowserAct is the `browser.act` pack: everything that MUTATES the page. Each of these
+// goes through the "did the tab change since the last read?" check in Dispatch.
+func (s *Session) ToolsBrowserAct() []ToolSpec {
+	return []ToolSpec{
+		tool("click_element", "Клик по элементу: selector (CSS) ИЛИ text (надпись на кнопке/ссылке).", obj(props{
+			"selector": str(""),
+			"text":     str("надпись элемента"),
+		})),
+		tool("type_text", "Ввод текста в поле.", obj(props{
+			"selector": str(""),
+			"text":     str(""),
+			"clear":    boolp("очистить поле"),
+		}, "selector", "text")),
+		tool("scroll_page", "Прокрутка.", obj(props{
+			"selector": str("CSS"),
+			"to":       str("bottom|top"),
+			"amount":   intp("px"),
+		})),
+		tool("select_option", "Выбор в select.", obj(props{
+			"selector": str(""),
+			"value":    str("value/текст"),
+		}, "selector", "value")),
+		tool("submit_form", "Отправить форму.", obj(props{"selector": str("CSS")})),
+		tool("upload_file", "Файлы в input[type=file].", obj(props{
+			"selector": str(""),
+			"paths":    arrp(""),
+		}, "paths")),
+		tool("drag_element", "Drag-and-drop.", obj(props{
+			"from": str("CSS"),
+			"to":   str("CSS"),
+		}, "from", "to")),
+		tool("close_page", "Закрыть вкладку.", obj(props{
+			"index": intp("пусто = текущая"),
+		})),
+	}
+}
+
+// ToolsConsole is the `console` pack: the raw shell.
+func (s *Session) ToolsConsole() []ToolSpec {
+	return []ToolSpec{
+		tool("run_command", "Команда в PowerShell (Windows) или bash. Обёртка powershell -Command не нужна.", obj(props{
+			"command":     str(""),
+			"cwd":         str("каталог"),
+			"timeout_sec": intp("по умолч. 120"),
+		}, "command")),
+	}
+}
+
+// ToolsFiles is the `files` pack: local filesystem.
+func (s *Session) ToolsFiles() []ToolSpec {
+	return []ToolSpec{
+		tool("read_file", "Чтение файла.", obj(props{
+			"path":      str(""),
+			"max_bytes": intp(""),
+		}, "path")),
+		tool("write_file", "Запись файла.", obj(props{
+			"path":    str(""),
+			"content": str(""),
+			"append":  boolp("дописать"),
+		}, "path", "content")),
+		tool("list_dir", "Список файлов.", obj(props{
+			"path": str("по умолч. ."),
+		})),
+		tool("file_info", "Метаданные пути.", obj(props{"path": str("")}, "path")),
+		tool("mkdir", "Создать каталог.", obj(props{"path": str("")}, "path")),
+		tool("delete_path", "Удалить файл/каталог.", obj(props{
+			"path":      str(""),
+			"recursive": boolp(""),
+		}, "path")),
+	}
+}
+
+// ToolsMedia is the `media` pack: video download + transcript (overlaps `web` on purpose;
+// the pack assembler dedups by function name).
+func (s *Session) ToolsMedia() []ToolSpec {
+	return []ToolSpec{
+		tool("download_video", "Скачать видео.", obj(props{
+			"url": str(""),
+		}, "url")),
+		tool("youtube_transcript", "Субтитры видео.", obj(props{
+			"url":  str(""),
+			"lang": str("ru,en"),
+		}, "url")),
+	}
+}
+
+// ToolsCore is the compact legacy catalog (terminal + files + web + a few Chrome reads).
+// The layered agent uses packs; this stays for direct callers and shrink fallbacks.
+func (s *Session) ToolsCore() []ToolSpec {
+	out := append([]ToolSpec{}, s.ToolsConsole()...)
+	out = append(out, s.ToolsFiles()[:3]...) // read_file, write_file, list_dir
+	out = append(out, s.ToolsWeb()[:6]...)   // search/read/http/github/transcript
+	out = append(out, s.ToolsMedia()[0])     // download_video
+	out = append(out, s.ToolsBrowserRead()[:2]...)
+	out = append(out, s.ToolsBrowserRead()[3]) // get_text
+	return DedupTools(out)
+}
+
+// Tools returns the whole catalog (every pack, deduped). Used by budget tests and any caller
+// that genuinely wants everything; the agent loop prefers packs.
+func (s *Session) Tools() []ToolSpec {
+	out := append([]ToolSpec{}, s.ToolsConsole()...)
+	out = append(out, s.ToolsFiles()...)
+	out = append(out, s.ToolsWeb()...)
+	out = append(out, s.ToolsMedia()...)
+	out = append(out, s.ToolsBrowserRead()...)
+	out = append(out, s.ToolsBrowserAct()...)
+	return DedupTools(out)
+}
+
+// DedupTools keeps the first spec per function name (§5: overlapping packs are normal —
+// youtube_transcript lives in both `web` and `media`).
+func DedupTools(in []ToolSpec) []ToolSpec {
+	seen := make(map[string]bool, len(in))
+	out := make([]ToolSpec, 0, len(in))
+	for _, t := range in {
+		name := t.Function.Name
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// browserActTools are the mutating page tools guarded by the tab-change check.
+var browserActTools = map[string]bool{
+	"click_element": true, "type_text": true, "scroll_page": true, "select_option": true,
+	"submit_form": true, "upload_file": true, "drag_element": true,
+}
+
+// browserReadTools refresh the "which page did the model last look at" anchor.
+var browserReadTools = map[string]bool{
+	"get_text": true, "get_html": true, "analyze_dom": true, "get_attributes": true,
+	"extract_links": true, "extract_images": true, "extract_table": true, "extract_forms": true,
+	"extract_json": true, "capture_screenshot": true, "open_url": true, "switch_tab": true,
 }
 
 // Dispatch executes one tool call and returns a string result for the model. Tool-level
 // failures are returned as the error so the agent can relay them as a `tool` message and let
 // the model recover; only an unknown tool name is a hard error.
-func (s *Session) Dispatch(name string, args map[string]any) (string, error) {
+//
+// ctx is the task context (§4.2): every child process and outbound HTTP request runs under
+// it, so /stop and TaskTimeout reach powershell / yt-dlp / a stalled fetch, not just the loop.
+func (s *Session) Dispatch(ctx context.Context, name string, args map[string]any) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	// §5: between get_text and click_element the page could have redirected, popped up a
+	// dialog, or lost focus. Acting on a page the model never read is worse than refusing.
+	if browserActTools[name] {
+		if err := s.ensureSamePage(); err != nil {
+			return "", err
+		}
+	}
+	if browserReadTools[name] {
+		defer s.noteCurrentPage()
+	}
 	switch name {
+	// ---- computer ----
+	case "run_command":
+		return RunCommand(ctx, argStr(args, "command"), argStr(args, "cwd"), argInt(args, "timeout_sec", 0))
+	case "read_file":
+		return ReadLocalFile(argStr(args, "path"), argInt(args, "max_bytes", 0))
+	case "write_file":
+		return WriteLocalFile(argStr(args, "path"), argStr(args, "content"), argBool(args, "append"))
+	case "list_dir":
+		return ListLocalDir(argStr(args, "path"))
+	case "file_info":
+		return LocalFileInfo(argStr(args, "path"))
+	case "mkdir":
+		return MkdirLocal(argStr(args, "path"))
+	case "delete_path":
+		return DeleteLocal(argStr(args, "path"), argBool(args, "recursive"))
+
+	// ---- reach ----
 	case "web_search":
-		results, err := WebSearch(argStr(args, "query"), argInt(args, "limit", 10))
+		results, err := WebSearch(ctx, argStr(args, "query"), argInt(args, "limit", 10))
 		if err != nil {
 			return "", err
 		}
@@ -113,6 +288,21 @@ func (s *Session) Dispatch(name string, args map[string]any) (string, error) {
 			return "Поиск не дал результатов.", nil
 		}
 		return toJSON(results), nil
+	case "semantic_search":
+		return SemanticSearch(ctx, argStr(args, "query"), argInt(args, "limit", 5))
+	case "read_url":
+		return ReadURL(ctx, argStr(args, "url"))
+	case "http_get":
+		return HTTPGet(ctx, argStr(args, "url"))
+	case "youtube_transcript":
+		return YouTubeTranscript(ctx, argStr(args, "url"), argStr(args, "lang"))
+	case "github_search":
+		return GitHubSearch(ctx, argStr(args, "kind"), argStr(args, "query"), argInt(args, "limit", 10))
+	case "agent_reach_doctor":
+		return AgentReachDoctor(ctx, argBool(args, "json"))
+	case "agent_reach":
+		return AgentReachRun(ctx, argStrSlice(args, "args"))
+
 	case "list_tabs":
 		tabs, err := s.ListTabs()
 		if err != nil {
@@ -138,6 +328,14 @@ func (s *Session) Dispatch(name string, args map[string]any) (string, error) {
 		return "Вкладка закрыта.", nil
 
 	case "click_element":
+		// Текст надёжнее селектора на живых SPA: разметка там генерируется, а надпись на
+		// кнопке — то же самое, что видит человек.
+		if txt := argStr(args, "text"); txt != "" {
+			if err := s.ClickText(txt); err != nil {
+				return "", err
+			}
+			return "Клик по элементу с текстом «" + txt + "» выполнен.", nil
+		}
 		if err := s.Click(argStr(args, "selector")); err != nil {
 			return "", err
 		}
@@ -240,11 +438,24 @@ func (s *Session) Dispatch(name string, args map[string]any) (string, error) {
 		return toJSON(ck), nil
 
 	case "get_network_requests":
+		if fresh, err := s.EnableNetworkCapture(); err != nil {
+			return "", err
+		} else if fresh {
+			return networkJustEnabledNote, nil
+		}
 		reqs := s.Requests(argStr(args, "filter"))
 		return capList(reqs, 150), nil
 	case "get_websocket_messages":
+		if fresh, err := s.EnableNetworkCapture(); err != nil {
+			return "", err
+		} else if fresh {
+			return networkJustEnabledNote, nil
+		}
 		return capList(s.WebSocketMessages(), 150), nil
 	case "get_response_body":
+		if _, err := s.EnableNetworkCapture(); err != nil {
+			return "", err
+		}
 		body, err := s.GetResponseBody(argStr(args, "request_id"))
 		if err != nil {
 			return "", err
@@ -258,7 +469,7 @@ func (s *Session) Dispatch(name string, args map[string]any) (string, error) {
 		}
 		return "Скачано в " + p, nil
 	case "download_video":
-		res, err := s.DownloadVideo(argStr(args, "url"), s.FFmpegPath)
+		res, err := s.DownloadVideo(ctx, argStr(args, "url"), s.FFmpegPath)
 		if err != nil {
 			return "", err
 		}
@@ -379,11 +590,28 @@ func obj(p props, required ...string) map[string]any {
 	return m
 }
 
-func str(desc string) map[string]any   { return map[string]any{"type": "string", "description": desc} }
-func boolp(desc string) map[string]any { return map[string]any{"type": "boolean", "description": desc} }
-func intp(desc string) map[string]any  { return map[string]any{"type": "integer", "description": desc} }
+// str/boolp/intp/arrp build one parameter. An EMPTY description is omitted from the schema on
+// purpose: self-evident names (url, path, selector) do not need prose, and every dropped
+// description is ~35 bytes off the pack budget, which is checked by TestPackSchemaBudget at
+// 12 000 chars for the worst-case union of all packs (§5).
+func str(desc string) map[string]any   { return param("string", desc) }
+func boolp(desc string) map[string]any { return param("boolean", desc) }
+func intp(desc string) map[string]any  { return param("integer", desc) }
+
+func param(kind, desc string) map[string]any {
+	m := map[string]any{"type": kind}
+	if desc != "" {
+		m["description"] = desc
+	}
+	return m
+}
+
 func arrp(desc string) map[string]any {
-	return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": desc}
+	m := map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	if desc != "" {
+		m["description"] = desc
+	}
+	return m
 }
 
 func argStr(a map[string]any, k string) string {

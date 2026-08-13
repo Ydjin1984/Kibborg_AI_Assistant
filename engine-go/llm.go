@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ func ensureBrain(cfg Config) {
 			log.Printf("[LLM] brain port :%d already serving llama-server — reusing it", cfg.BrainPort)
 		} else {
 			log.Printf("[LLM] ⚠ порт :%d занят ПОСТОРОННИМ процессом (его /health не похож на llama-server) — "+
-				"модель НЕ будет загружена. Освободи порт 8080 (закрой чужой процесс) ИЛИ смени PORT_BRAIN "+
+				"модель НЕ будет загружена. Освободи этот порт (закрой чужой процесс) ИЛИ смени PORT_BRAIN "+
 				"в settings.ini на свободный, затем перезапусти бота.", cfg.BrainPort)
 		}
 		return
@@ -55,6 +56,13 @@ func ensureBrain(cfg Config) {
 		return
 	}
 
+	// Parallel slots: each slot reserves a full ctx-size KV cache. Auto (=4 on this
+	// build) with ctx=32k multiplies VRAM pressure and tanks decode speed on 12 GB cards.
+	// Default 1 = one concurrent reply, maximum gen speed for interactive chat.
+	parallel := cfg.Parallel
+	if parallel <= 0 {
+		parallel = 1
+	}
 	args := []string{
 		"-m", cfg.ModelPath,
 		"--ctx-size", strconv.Itoa(cfg.CtxSize),
@@ -62,10 +70,24 @@ func ensureBrain(cfg Config) {
 		"--threads", strconv.Itoa(cfg.Threads),
 		"--port", strconv.Itoa(cfg.BrainPort),
 		"--flash-attn", "on",
+		"--parallel", strconv.Itoa(parallel),
 	}
-	// Multi-GPU placement. The monitor is wired to GPU 1, so by default we push more of
-	// the model onto the free GPU 0 (LLAMA_TENSOR_SPLIT) and keep the KV-cache/compute
-	// buffers off the display card (LLAMA_MAIN_GPU). Leaving both unset = llama.cpp auto.
+	// Qwen defaults to thinking/reasoning which burns tokens before the visible
+	// answer. Off by default; --reasoning-budget 0 also kills leftover template thinking.
+	reason := cfg.Reasoning
+	if reason == "" {
+		reason = "off"
+	}
+	args = append(args, "--reasoning", reason)
+	if reason == "off" {
+		args = append(args, "--reasoning-budget", "0")
+	}
+	// GPU placement. Qwen 35B needs both 3060s: leave DEVICE empty and use tensor-split.
+	// CUDA1 (single non-display card) only if a future small model fits one GPU.
+	if cfg.Device != "" {
+		args = append(args, "--device", cfg.Device)
+		log.Printf("[LLM] device: %s", cfg.Device)
+	}
 	if cfg.TensorSplit != "" {
 		args = append(args, "--tensor-split", cfg.TensorSplit)
 		log.Printf("[LLM] tensor-split: %s", cfg.TensorSplit)
@@ -74,16 +96,36 @@ func ensureBrain(cfg Config) {
 		args = append(args, "--main-gpu", strconv.Itoa(cfg.MainGpu))
 		log.Printf("[LLM] main-gpu: %d", cfg.MainGpu)
 	}
-	// Vision: use explicit MMPROJ_PATH, else auto-detect an mmproj next to the model
-	// so screenshots/images work without editing settings.ini.
-	mmproj := cfg.MmprojPath
-	if mmproj == "" {
+	// Quantized KV cache (q8_0): less VRAM + less bandwidth per token than f16. Recommended
+	// for dual 12 GB setups with ctx≥16k. Empty = llama.cpp default (usually f16).
+	if cfg.CacheTypeK != "" {
+		args = append(args, "--cache-type-k", cfg.CacheTypeK)
+	}
+	if cfg.CacheTypeV != "" {
+		args = append(args, "--cache-type-v", cfg.CacheTypeV)
+	}
+	if cfg.CacheTypeK != "" || cfg.CacheTypeV != "" {
+		log.Printf("[LLM] cache-type k=%s v=%s", cfg.CacheTypeK, cfg.CacheTypeV)
+	}
+	// Vision: ONLY when MMPROJ_PATH is set. Empty path = text-only (no auto-detect).
+	// Auto-loading mmproj from the model folder silently steals ~1 GB VRAM and slows
+	// every text turn — that was a major speed regression when mmproj sat next to GGUF.
+	mmproj := strings.TrimSpace(cfg.MmprojPath)
+	if strings.EqualFold(mmproj, "auto") {
 		mmproj = autoDetectMmproj(cfg.ModelPath)
 	}
-	if mmproj != "" {
-		args = append(args, "--mmproj", mmproj)
-		log.Printf("[LLM] vision enabled via mmproj: %s", filepath.Base(mmproj))
+	if mmproj != "" && !strings.EqualFold(mmproj, "off") && !strings.EqualFold(mmproj, "none") {
+		if _, err := os.Stat(mmproj); err != nil {
+			log.Printf("[LLM] mmproj not found (%s) — starting without vision", mmproj)
+		} else {
+			args = append(args, "--mmproj", mmproj)
+			log.Printf("[LLM] vision enabled via mmproj: %s", filepath.Base(mmproj))
+		}
+	} else {
+		log.Printf("[LLM] vision off (set MMPROJ_PATH=auto or path to mmproj.gguf to enable)")
 	}
+	log.Printf("[LLM] parallel=%d reasoning=%s ctx=%d device=%s cache-k=%s cache-v=%s",
+		parallel, reason, cfg.CtxSize, orDash(cfg.Device), orDash(cfg.CacheTypeK), orDash(cfg.CacheTypeV))
 
 	cmd := exec.Command(cfg.LlamaExe, args...)
 	// Run from the llama build dir so its CUDA DLLs load (matches start-brain.cmd).
@@ -97,6 +139,13 @@ func ensureBrain(cfg Config) {
 	registerEngineProc(cmd.Process)
 	log.Printf("[LLM] launching brain (pid %d): %s :%d — model load may take 1-5 min",
 		cmd.Process.Pid, filepath.Base(cfg.ModelPath), cfg.BrainPort)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // autoDetectMmproj returns the first mmproj*.gguf found in the model's directory, if any.
@@ -148,6 +197,30 @@ func brainReady(port int) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == 200
+}
+
+// brainHasVision reports whether the running llama-server loaded an mmproj
+// (modalities.vision == true on /props). Text chat works either way; image_url
+// requires true — otherwise the server returns HTTP 500.
+func brainHasVision(port int) bool {
+	c := &http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/props", port))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return false
+	}
+	var props struct {
+		Modalities struct {
+			Vision bool `json:"vision"`
+		} `json:"modalities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&props); err != nil {
+		return false
+	}
+	return props.Modalities.Vision
 }
 
 // waitForBrain blocks until the LLM is ready or the timeout elapses.
@@ -342,40 +415,113 @@ type assistantMsg struct {
 // the caller can act on tool_calls. Pass tools=nil to force a plain text turn (e.g. the
 // final "summarize what you found" step). Messages are generic maps so they can include
 // assistant tool_calls and role:"tool" results.
-func llmChatTools(port int, messages []map[string]any, tools any, temperature float64) (assistantMsg, error) {
+//
+// cache_prompt is always false here: tool loops rewrite the message list every step
+// (assistant tool_calls + role:tool results). llama-server prompt-cache checkpoints then
+// invalidate ("erased invalidated context checkpoint") and can surface as flaky 400s /
+// broken generations. Normal streaming chat keeps cache_prompt=true.
+// ctx is the task context: /stop must abort an in-flight GENERATION too, not just the gap
+// between steps — a Qwen turn can run for a minute, and "остановлено" a minute later is not
+// stopping (same reasoning as the child-process contexts in §4.2).
+func llmChatTools(ctx context.Context, port int, messages []map[string]any, tools any, temperature float64) (assistantMsg, turnStats, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	payload := map[string]any{
 		"messages":     messages,
 		"temperature":  temperature,
 		"stream":       false,
-		"cache_prompt": true,
+		"cache_prompt": false,
 	}
 	if tools != nil {
 		payload["tools"] = tools
 		payload["tool_choice"] = "auto"
 	}
 	body, _ := json.Marshal(payload)
-	c := &http.Client{Timeout: 180 * time.Second}
-	resp, err := c.Post(
-		fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port),
-		"application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), bytes.NewReader(body))
 	if err != nil {
-		return assistantMsg{}, err
+		return assistantMsg{}, turnStats{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c := &http.Client{Timeout: 180 * time.Second}
+	resp, err := c.Do(req)
+	if err != nil {
+		return assistantMsg{}, turnStats{}, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return assistantMsg{}, fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, string(raw))
+		return assistantMsg{}, turnStats{}, fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, string(raw))
 	}
 	var parsed struct {
 		Choices []struct {
 			Message assistantMsg `json:"message"`
 		} `json:"choices"`
+		// llama.cpp includes per-request timings in non-streaming replies too. This is the
+		// number ТЗ §3.2 tells us to watch: prompt_ms of the FIRST executor turn after the
+		// dispatcher, i.e. the real cost of re-processing the system prompt once per task.
+		Timings struct {
+			PromptN            int     `json:"prompt_n"`
+			PromptMs           float64 `json:"prompt_ms"`
+			PromptPerSecond    float64 `json:"prompt_per_second"`
+			PredictN           int     `json:"predicted_n"`
+			PredictedMs        float64 `json:"predicted_ms"`
+			PredictedPerSecond float64 `json:"predicted_per_second"`
+		} `json:"timings"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return assistantMsg{}, fmt.Errorf("LLM bad JSON: %w", err)
+		return assistantMsg{}, turnStats{}, fmt.Errorf("LLM bad JSON: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
-		return assistantMsg{}, fmt.Errorf("LLM empty response")
+		return assistantMsg{}, turnStats{}, fmt.Errorf("LLM empty response")
 	}
-	return parsed.Choices[0].Message, nil
+	msg := parsed.Choices[0].Message
+	normalizeToolCalls(&msg)
+	st := turnStats{
+		PromptTokens: parsed.Timings.PromptN,
+		PromptMs:     parsed.Timings.PromptMs,
+		GenTokens:    parsed.Timings.PredictN,
+		GenMs:        parsed.Timings.PredictedMs,
+	}
+	// Ход агента — это тоже генерация, и раньше о ней панель не знала НИЧЕГО: llmChatTools не
+	// трогал live, а агентские пути звали live.finish(GenStats{}) с нулями. Отсюда и «цифры
+	// стоят статично»: во время работы агента показывать было просто нечего.
+	live.turnDone(GenStats{
+		PromptTokens: parsed.Timings.PromptN,
+		PromptPerSec: parsed.Timings.PromptPerSecond,
+		GenTokens:    parsed.Timings.PredictN,
+		GenPerSec:    parsed.Timings.PredictedPerSecond,
+		TotalMs:      parsed.Timings.PromptMs + parsed.Timings.PredictedMs,
+	})
+	return msg, st, nil
+}
+
+// turnStats is what one tool-loop turn cost. Deliberately a handful of fields, not twenty
+// (§14: telemetry for a single user on a single PC is a test bench for its own sake) — these
+// answer «где тормозит» together with dispatcher_ms and total_ms in tasks.jsonl.
+type turnStats struct {
+	PromptTokens int
+	PromptMs     float64
+	GenTokens    int
+	GenMs        float64
+}
+
+// normalizeToolCalls fills missing tool_call ids/args so chat templates that require
+// tool_call_id never see undefined values (llama.cpp jinja: "not in tool_ids_seen").
+func normalizeToolCalls(m *assistantMsg) {
+	if m == nil {
+		return
+	}
+	for i := range m.ToolCalls {
+		if strings.TrimSpace(m.ToolCalls[i].ID) == "" {
+			m.ToolCalls[i].ID = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), i)
+		}
+		if strings.TrimSpace(m.ToolCalls[i].Type) == "" {
+			m.ToolCalls[i].Type = "function"
+		}
+		if strings.TrimSpace(m.ToolCalls[i].Function.Arguments) == "" {
+			m.ToolCalls[i].Function.Arguments = "{}"
+		}
+	}
 }

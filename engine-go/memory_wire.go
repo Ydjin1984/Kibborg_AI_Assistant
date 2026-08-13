@@ -114,6 +114,19 @@ func memoryContext(cfg Config, chatID int64, userText string) []map[string]any {
 	return blocks
 }
 
+// memorySummaryFor returns the rolling memory digest for a chat — the dispatcher gets the
+// SUMMARY, the executor gets recall, the store gets the final answer (§4.1).
+func memorySummaryFor(chatID int64) string {
+	if mem == nil {
+		return ""
+	}
+	sum, err := mem.GetSummary(chatID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(sum)
+}
+
 // rememberExchange stores a completed turn and (periodically) refreshes the summary. It runs
 // asynchronously so embedding/summarization never delays the user's reply. Called from
 // recordHistory, so every channel (Telegram text/image/file, web) is captured uniformly.

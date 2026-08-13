@@ -2,16 +2,13 @@
 # После изменений перезапусти стек (Stop затем Start или через Меню).
 
 # === МОДЕЛЬ МОЗГА (llama-server) ===
-# Полный путь к GGUF модели для Мозга (мозг + глаза/зрение в одной модели пока)
-# Меняй здесь, чтобы переключать модели без правки кода .cmd
-# Примеры:
+# Полный путь к GGUF. Меняй здесь, чтобы переключать модели без правки кода.
+# По умолчанию: Qwen3.6-35B-A3B (Unsloth UD-IQ4_XS) — агент + vision.
 MODEL_PATH=models\brain\Qwen3.6-35B-A3B\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
-# MODEL_PATH=models\brain\Gemma4-26B-A4B\google_gemma-4-26B-A4B-it-IQ4_XS.gguf
 
-# Опциональный mmproj для зрения (для Qwen и моделей с отдельным проектором)
-# Оставь пустым для Gemma или чисто текстовых моделей. Для Qwen + зрение раскомментируй:
-# MMPROJ_PATH=models\vision\mmproj-BF16.gguf
-MMPROJ_PATH=
+# mmproj для зрения. Пусто = текст only. auto = mmproj рядом с MODEL_PATH.
+MMPROJ_PATH=models\brain\Qwen3.6-35B-A3B\mmproj-BF16.gguf
+# MMPROJ_PATH=auto
 
 # === ИСПОЛНЯЕМЫЙ ФАЙЛ LLAMA-SERVER (ОБЯЗАТЕЛЬНО) ===
 # Путь к llama-server.exe из твоей сборки llama.cpp с поддержкой CUDA.
@@ -24,22 +21,27 @@ MMPROJ_PATH=
 LLAMA_SERVER=D:\llama.cpp\cuda-bin-b9550\llama-server.exe
 
 # === ПОРТЫ ===
-PORT_BRAIN=8080
+# Не используй 8080 — часто занят другими локальными проектами.
+PORT_BRAIN=8083
 PORT_ENGINE=8002
 
 # === ПАРАМЕТРЫ LLAMA-SERVER (настрой под железо) ===
 LLAMA_THREADS=28
 LLAMA_CTX_SIZE=32768
 LLAMA_GPU_LAYERS=99
+# 1 = макс. скорость чата; 4+ = много KV-кэша, decode тормозит на 12 GB GPU
+LLAMA_PARALLEL=1
+# off = без thinking (быстро); on = длинные «размышления» Qwen
+LLAMA_REASONING=off
 
-# --- Распределение модели по двум GPU ---
-# К GPU 1 подключён монитор (его VRAM уже занят DWM/браузером), поэтому больше модели
-# кладём на свободный GPU 0, а меньше — на GPU 1, чтобы оставить ему запас под дисплей.
-# Доли идут ПО ИНДЕКСУ карты: первое число = GPU 0, второе = GPU 1.
-# Хочешь сильнее разгрузить монитор-карту — увеличивай первое число (например 0.6,0.4).
-LLAMA_TENSOR_SPLIT=0.55,0.45
-# На какой GPU класть KV-кэш и compute-буферы. Держим на свободном GPU 0 (не на мониторе).
+# --- GPU (критично для лагов UI) ---
+# Qwen 35B на обе 3060: DEVICE пустой + TENSOR_SPLIT. Больше веса на свободную GPU1.
+LLAMA_DEVICE=
+LLAMA_TENSOR_SPLIT=0.35,0.65
 LLAMA_MAIN_GPU=0
+# KV cache q8_0 вместо f16: меньше VRAM/bandwidth на 12 GB картах.
+LLAMA_CACHE_TYPE_K=q8_0
+LLAMA_CACHE_TYPE_V=q8_0
 
 # === GO ДВИЖОК (внутренний) ===
 # Здесь модели нет — Go-бинарник содержит только детерминированную логику инструментов
@@ -51,12 +53,40 @@ TELEGRAM_TOKEN=
 # 3. Запусти Start.cmd (или Menu -> 5).
 # Бинарь поднимет и HTTP tools на 8002, и Telegram бота в горутине.
 # Бот отвечает на тикеры и /analyze SYMBOL, используя детерминированный Go engine.
-# (Позже добавим умный чат через мозг на 8080).
+
 TELEGRAM_ID=
 
-# === ГОЛОСОВЫЕ СООБЩЕНИЯ (whisper.cpp) ===
-# Распознавание речи: скачай сборку whisper.cpp и ggml-модель, заполни пути — и бот начнёт
-# понимать голосовые. Пустые значения = голосовые выключены (бот подскажет, что настроить).
+# === РУКИ АГЕНТА (безопасность) ===
+# Режим рук (safe / full) в ini НЕ задаётся: он переключается на лету — командой /hands в
+# Telegram или тумблером в веб-панели — и живёт в runtime/hands_mode.json. По умолчанию safe:
+# опасные действия (удаление вне рабочих папок, запись в settings.ini/.git/автозагрузку,
+# неразбираемые команды вроде -EncodedCommand) спрашивают подтверждение «да / нет».
+# В режиме full подтверждений нет, но ядерные команды (format, diskpart, bcdedit, shutdown,
+# снос корня диска) и переводы средств заблокированы всегда.
+#
+# AGENT_HANDS_ROOTS — дополнительные каталоги, где агент пишет и удаляет БЕЗ подтверждения.
+# Разделитель ; или , . Проект, Рабочий стол и engine-go\runtime разрешены и без этой строки.
+# Пример: AGENT_HANDS_ROOTS=D:\work\scratch;E:\dumps
+AGENT_HANDS_ROOTS=
+
+# Журналы решений агента (ротация на 5 МБ, одна предыдущая копия *.jsonl.1):
+#   runtime\hands.jsonl — почему инструмент разрешён/запрещён/спрошен (taskID, rule, reason)
+#   runtime\tasks.jsonl — одна строка на задачу: вход, паки, шаги, инструменты, исход
+# Посмотреть разбором: /logs runtime/hands.jsonl
+
+# === ГОЛОС (TypeWhisper primary + whisper.cpp fallback) ===
+# Telegram voice / Web 🎙 → STT → обычный чат с LLM.
+#
+# 1) TypeWhisper for Windows (рекомендуется):
+#    https://github.com/TypeWhisper/typewhisper-win
+#    - Settings → Advanced → API Server ON (порт 8978)
+#    - Локальная модель: Whisper Large V3 Turbo (качество + скорость, ru/en)
+#    - Пустой TYPEWHISPER_URL = auto-discover (%LOCALAPPDATA%\TypeWhisper\api-discovery.json) → :8978
+#    - TYPEWHISPER_URL=off — полностью отключить TypeWhisper
+TYPEWHISPER_URL=
+TYPEWHISPER_TOKEN=
+#
+# 2) whisper.cpp fallback (если TypeWhisper не запущен):
 # Пример: WHISPER_SERVER=D:\whisper.cpp\whisper-server.exe
 WHISPER_SERVER=
 # Пример: WHISPER_MODEL=models\whisper\ggml-large-v3-turbo.bin
@@ -76,10 +106,16 @@ STOP_BRAIN_ON_EXIT=false
 # Паритет с Telegram: новые фичи бота добавляются и сюда (см. AGENTS.md).
 PORT_WEB=8090
 
-# === ВИДЕО (yt-dlp) ===
+# === ВИДЕО (yt-dlp + ffmpeg) ===
 # Скачивание YouTube / Instagram / TikTok: нужен yt-dlp в PATH или `pip install yt-dlp`.
 # ffmpeg (ниже) нужен для склейки лучшего video+audio в один mp4.
 # FFMPEG=  — уже есть в секции голоса; тот же путь используется download_video.
+#
+# РАЗБОР видео (пришли ролик в чат или скажи «разбери D:\урок.mp4») требует ffmpeg И ffprobe.
+# ffprobe ищется рядом с ffmpeg, иначе в PATH. Установка одной командой:
+#     winget install Gyan.FFmpeg
+# Речь берётся тем же STT, что и голосовые (секция выше), кадры — тем же зрением, что и
+# картинки (MMPROJ_PATH). Своих настроек у слоя видео нет: он собран из уже настроенного.
 
 # === ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (SQLite + опциональные эмбеддинги) ===
 # Бот помнит диалог дольше короткого окна: хранит прошлые обмены в runtime/memory.db,

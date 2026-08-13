@@ -45,11 +45,16 @@ type Trade struct {
 	Confidence float64   `json:"confidence"`
 	Status     string    `json:"status"`
 	Note       string    `json:"note"`
-	OpenedTS   int64     `json:"opened_ts"`
-	ClosedTS   int64     `json:"closed_ts"`
-	ExitPrice  float64   `json:"exit_price"`
-	PnL        float64   `json:"pnl"`
-	RMultiple  float64   `json:"r_multiple"`
+	// ClientID is the caller's idempotency key (agent: taskID + tool_call_id). A repeated
+	// journal_add with the same key returns the existing trade instead of double-booking it —
+	// the one place in the agent where a real dedup key is needed, because a timed-out tool
+	// leaves the state unknown and the model may legitimately retry.
+	ClientID  string  `json:"client_id,omitempty"`
+	OpenedTS  int64   `json:"opened_ts"`
+	ClosedTS  int64   `json:"closed_ts"`
+	ExitPrice float64 `json:"exit_price"`
+	PnL       float64 `json:"pnl"`
+	RMultiple float64 `json:"r_multiple"`
 }
 
 // Stats is the aggregate performance of a chat's closed trades.
@@ -114,7 +119,20 @@ CREATE TABLE IF NOT EXISTS trades (
   r_multiple  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_trades_chat ON trades(chat_id, id);`
-	_, err := s.db.Exec(schema)
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	// client_id arrived after the first schema: add it to existing databases. SQLite has no
+	// "ADD COLUMN IF NOT EXISTS", and a duplicate-column error here is the expected no-op.
+	if _, err := s.db.Exec(`ALTER TABLE trades ADD COLUMN client_id TEXT`); err != nil &&
+		!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	// Partial unique index: only non-empty keys are constrained, so hand-logged trades
+	// (/log without a key) are unaffected.
+	_, err := s.db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_client ON trades(client_id)
+		 WHERE client_id IS NOT NULL AND client_id <> ''`)
 	return err
 }
 
@@ -128,21 +146,48 @@ func (s *Store) Close() error {
 
 // Add inserts a new open trade and returns its id. Status/opened_ts are set here.
 func (s *Store) Add(t Trade) (int64, error) {
+	id, _, err := s.AddIdempotent(t)
+	return id, err
+}
+
+// AddIdempotent inserts a trade, deduplicating on ClientID when one is set. duplicate=true
+// means "this exact request was already journalled" — the caller reports the existing trade
+// instead of creating a second identical position.
+func (s *Store) AddIdempotent(t Trade) (id int64, duplicate bool, err error) {
 	if s == nil {
-		return 0, fmt.Errorf("журнал недоступен")
+		return 0, false, fmt.Errorf("журнал недоступен")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	key := strings.TrimSpace(t.ClientID)
+	if key != "" {
+		var existing int64
+		switch err := s.db.QueryRow(`SELECT id FROM trades WHERE client_id = ?`, key).Scan(&existing); {
+		case err == nil:
+			return existing, true, nil
+		case err != sql.ErrNoRows:
+			return 0, false, err
+		}
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO trades(chat_id, symbol, direction, entry, stop, targets, qty, notional,
-		 leverage, risk_amount, regime, score, confidence, status, note, opened_ts)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 leverage, risk_amount, regime, score, confidence, status, note, opened_ts, client_id)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ChatID, t.Symbol, t.Direction, t.Entry, t.Stop, encodeFloats(t.Targets), t.Qty, t.Notional,
-		t.Leverage, t.RiskAmount, t.Regime, t.Score, t.Confidence, StatusOpen, t.Note, time.Now().Unix())
+		t.Leverage, t.RiskAmount, t.Regime, t.Score, t.Confidence, StatusOpen, t.Note, time.Now().Unix(), key)
 	if err != nil {
-		return 0, err
+		// Lost the race against a concurrent identical insert — the unique index fired.
+		if key != "" && strings.Contains(strings.ToLower(err.Error()), "unique") {
+			var existing int64
+			if qerr := s.db.QueryRow(`SELECT id FROM trades WHERE client_id = ?`, key).Scan(&existing); qerr == nil {
+				return existing, true, nil
+			}
+		}
+		return 0, false, err
 	}
-	return res.LastInsertId()
+	id, err = res.LastInsertId()
+	return id, false, err
 }
 
 // Close records an exit for an open trade, computing PnL, R-multiple and win/loss/breakeven.

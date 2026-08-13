@@ -102,10 +102,22 @@ func matchVideoURL(s string) string {
 	return ""
 }
 
-// FetchVideo downloads a video (YouTube, Instagram, …) at the best available quality via
-// yt-dlp and writes it under runtime/browser/videos. ffmpeg is used for muxing when present.
-// This does not require Chrome — it shells out to yt-dlp / python -m yt_dlp.
-func FetchVideo(rawURL, ffmpegPath string) (VideoDownload, error) {
+// FetchVideo downloads a video (YouTube, Instagram, …) at the best available quality.
+func FetchVideo(parent context.Context, rawURL, ffmpegPath string) (VideoDownload, error) {
+	return FetchMedia(parent, rawURL, ffmpegPath, false)
+}
+
+// FetchMedia downloads a URL via yt-dlp and writes it under runtime/browser/videos. ffmpeg is
+// used for muxing when present. This does not require Chrome — it shells out to yt-dlp /
+// python -m yt_dlp.
+//
+// audioOnly grabs the best AUDIO stream and skips the video entirely. Speech analysis does not
+// need pixels, and on an hour-long talk that is the difference between ~30 MB and a gigabyte —
+// plus no muxing pass at the end.
+//
+// parent is the task context: /stop (or TaskTimeout) kills yt-dlp mid-download rather than
+// leaving a 45-minute child running after the user was told "остановлено".
+func FetchMedia(parent context.Context, rawURL, ffmpegPath string, audioOnly bool) (VideoDownload, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return VideoDownload{}, fmt.Errorf("нужен URL видео")
@@ -129,23 +141,34 @@ func FetchVideo(rawURL, ffmpegPath string) (VideoDownload, error) {
 
 	args := append([]string{}, argsPrefix...)
 	// Best video+audio, fallback to single best stream. Prefer mp4 when merging.
+	format, merge := "bv*+ba/b", "mp4"
+	if audioOnly {
+		// `ba/b`: лучший звук, иначе — что дали. Никакой перекодировки: ffmpeg на нашей
+		// стороне всё равно приведёт файл к 16 кГц моно перед распознаванием.
+		format, merge = "ba/b", ""
+	}
 	args = append(args,
 		"--no-playlist",
 		"--no-progress",
 		"--newline",
-		"-f", "bv*+ba/b",
-		"--merge-output-format", "mp4",
+		"-f", format,
 		"-o", outTmpl,
 		"--print", "after_move:filepath",
 		"--print", "before_dl:title",
 		"--print", "before_dl:ext",
 	)
+	if merge != "" {
+		args = append(args, "--merge-output-format", merge)
+	}
 	if ff := resolveFFmpeg(ffmpegPath); ff != "" {
 		args = append(args, "--ffmpeg-location", ff)
 	}
 	args = append(args, rawURL)
 
-	ctx, cancel := context.WithTimeout(context.Background(), videoDownloadTimeout)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, videoDownloadTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	var stdout, stderr bytes.Buffer
@@ -154,6 +177,9 @@ func FetchVideo(rawURL, ffmpegPath string) (VideoDownload, error) {
 	cmd.Env = os.Environ()
 
 	if err := cmd.Run(); err != nil {
+		if parent.Err() != nil {
+			return VideoDownload{}, context.Canceled
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return VideoDownload{}, fmt.Errorf("yt-dlp: таймаут %s — скачивание прервано", videoDownloadTimeout)
 		}
@@ -217,8 +243,8 @@ func FetchVideo(rawURL, ffmpegPath string) (VideoDownload, error) {
 }
 
 // DownloadVideo is the Session-bound tool wrapper: downloads and registers the file as an artifact.
-func (s *Session) DownloadVideo(rawURL, ffmpegPath string) (VideoDownload, error) {
-	res, err := FetchVideo(rawURL, ffmpegPath)
+func (s *Session) DownloadVideo(ctx context.Context, rawURL, ffmpegPath string) (VideoDownload, error) {
+	res, err := FetchVideo(ctx, rawURL, ffmpegPath)
 	if err != nil {
 		return res, err
 	}

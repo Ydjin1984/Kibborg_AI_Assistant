@@ -4,10 +4,12 @@ This directory contains dashboard-style launchers for the Go reference trading b
 
 ## Quick Start (after models downloaded)
 
-1. Build the Go binary:
+1. Build the Go binary (**обязательно через lint-gate**):
    ```
    build.cmd
    ```
+   Порядок: `gofmt -l` → `go vet ./...` → `staticcheck ./...` → `go build`.
+   Если линтер упал — `.exe` **не** пересобирается. Пункт меню «4. Собрать» и автосборка в `Start.cmd` вызывают тот же `build.cmd`.
 
 2. Start the full stack (Brain + Trading Engine):
    ```
@@ -18,6 +20,12 @@ This directory contains dashboard-style launchers for the Go reference trading b
    ```
    stop-full-stack.cmd
    ```
+
+## Первый прогон агента
+
+После сборки и старта — `..\ПЕРВЫЙ_ЗАПУСК.md`: пошаговая приёмка слойного агента
+(измерения §3.2, маршрутизация, ворота безопасности, `/stop`, подтверждения) с командами
+чтения `runtime\tasks.jsonl` и `runtime\hands.jsonl`.
 
 ## Files
 
@@ -35,7 +43,7 @@ This directory contains dashboard-style launchers for the Go reference trading b
 See `SETUP_HARDWARE.md` for the full block with model recommendations (Qwen3.6-35B-A3B UD-IQ4_XS recommended), download commands, and optimized llama-server command.
 
 The `start-brain.cmd` uses the dual-GPU settings:
-- --tensor-split 0.5,0.5
+- --tensor-split 0.35,0.65
 - --n-gpu-layers 99
 - --ctx-size 32768
 - etc.
@@ -46,7 +54,7 @@ If OOM, reduce layers or ctx size.
 
 ## Integration
 
-- Brain (LLM + Vision): http://127.0.0.1:8080 (for the bot's LLM calls)
+- Brain (LLM + Vision): http://127.0.0.1:8083 (for the bot's LLM calls)
 - Trading Engine (Go): http://127.0.0.1:8002 (for deterministic tools like full_trading_check)
 
 The Go engine is the reference implementation of the old Python trading brain - LLM never invents numbers.

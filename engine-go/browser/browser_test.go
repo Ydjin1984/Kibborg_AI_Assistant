@@ -1,6 +1,9 @@
 package browser
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -146,9 +149,23 @@ func TestDecodeDDG(t *testing.T) {
 
 func TestToolsCatalogShape(t *testing.T) {
 	s := New("")
+	core := s.ToolsCore()
+	if len(core) < 10 || len(core) > 20 {
+		t.Fatalf("ToolsCore should be compact (10-20), got %d", len(core))
+	}
+	coreSeen := map[string]bool{}
+	for _, tl := range core {
+		coreSeen[tl.Function.Name] = true
+	}
+	for _, want := range []string{"run_command", "web_search", "read_url", "list_dir", "open_url"} {
+		if !coreSeen[want] {
+			t.Errorf("ToolsCore missing %q", want)
+		}
+	}
+
 	tools := s.Tools()
-	if len(tools) < 20 {
-		t.Fatalf("expected the full tool catalog, got %d tools", len(tools))
+	if len(tools) < 30 {
+		t.Fatalf("expected full tool catalog (>=30), got %d", len(tools))
 	}
 	seen := map[string]bool{}
 	for _, tl := range tools {
@@ -163,10 +180,77 @@ func TestToolsCatalogShape(t *testing.T) {
 		}
 		seen[tl.Function.Name] = true
 	}
-	// Spot-check a few names required by the spec exist.
-	for _, want := range []string{"web_search", "open_url", "extract_table", "extract_links", "clone_website", "capture_screenshot", "get_network_requests", "get_websocket_messages", "download_video"} {
+	for _, want := range []string{
+		"web_search", "open_url", "extract_table", "extract_links", "clone_website",
+		"capture_screenshot", "get_network_requests", "get_websocket_messages", "download_video",
+		"run_command", "read_file", "write_file", "list_dir",
+		"read_url", "semantic_search", "youtube_transcript", "github_search",
+		"agent_reach_doctor", "agent_reach",
+	} {
 		if !seen[want] {
 			t.Errorf("required tool %q missing from catalog", want)
+		}
+	}
+}
+
+// ТЗ §5 / приёмка №32: between get_text and click_element the page can redirect. The v1
+// minimum is comparing the active URL with the one last READ — a #anchor is not navigation,
+// a different path is.
+func TestSameLocationIgnoresFragmentOnly(t *testing.T) {
+	cases := []struct {
+		a, b string
+		same bool
+	}{
+		{"https://x.com/a", "https://x.com/a", true},
+		{"https://x.com/a", "https://x.com/a#top", true},
+		{"https://x.com/a/", "https://x.com/a", true},
+		{"https://x.com/a", "https://x.com/b", false},
+		{"https://x.com/a", "https://evil.com/a", false},
+		{"https://x.com/a", "https://x.com/a?q=1", false},
+	}
+	for _, c := range cases {
+		if got := sameLocation(c.a, c.b); got != c.same {
+			t.Errorf("sameLocation(%q,%q)=%v, ждали %v", c.a, c.b, got, c.same)
+		}
+	}
+}
+
+// With no page read yet there is nothing to contradict — the check must not block the first
+// action of a task (ResetPageAnchor clears it between tasks).
+func TestEnsureSamePageNoAnchor(t *testing.T) {
+	s := New("")
+	if err := s.ensureSamePage(); err != nil {
+		t.Fatalf("без прочитанной страницы проверка должна пропускать: %v", err)
+	}
+	s.lastReadURL = "https://x.com/a"
+	s.ResetPageAnchor()
+	if s.lastReadURL != "" {
+		t.Fatal("ResetPageAnchor должен снимать якорь страницы")
+	}
+}
+
+// Every mutating page tool must be covered by the tab check, and no read tool may claim to be
+// one — the two maps are what Dispatch branches on.
+func TestActAndReadToolMapsMatchPacks(t *testing.T) {
+	s := New("")
+	for _, tl := range s.ToolsBrowserAct() {
+		name := tl.Function.Name
+		if name == "close_page" {
+			continue // closing a tab does not act ON page content
+		}
+		if !browserActTools[name] {
+			t.Errorf("инструмент %s из browser.act не проходит проверку смены вкладки", name)
+		}
+	}
+	for name := range browserActTools {
+		if browserReadTools[name] {
+			t.Errorf("инструмент %s помечен и как чтение, и как действие", name)
+		}
+	}
+	// The read anchors must exist in the read pack.
+	for _, want := range []string{"get_text", "open_url", "analyze_dom"} {
+		if !browserReadTools[want] {
+			t.Errorf("%s должен обновлять якорь страницы", want)
 		}
 	}
 }
@@ -200,5 +284,89 @@ func TestIsVideoURL(t *testing.T) {
 	}
 	if ExtractVideoURL("https://example.com/x") != "" {
 		t.Error("example.com should not extract as video URL")
+	}
+}
+
+// Живой прогон: Chrome перезапустился, и агент потерял его НАВСЕГДА — list_tabs (обычный HTTP)
+// продолжал показывать вкладки, а switch_tab и get_text падали с «404 на ws://…», пока не
+// перезапустишь весь движок. Причина: браузерный WebSocket содержит идентификатор запуска,
+// а мы кэшировали его один раз и на всю жизнь процесса.
+func TestAllocatorFollowsChromeRestart(t *testing.T) {
+	ws := "ws://127.0.0.1:9222/devtools/browser/AAAA-1111"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/json/version") {
+			_ = json.NewEncoder(w).Encode(map[string]string{"webSocketDebuggerUrl": ws})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL)
+	defer s.Close()
+
+	s.actMu.Lock()
+	if err := s.ensureAlloc(); err != nil {
+		s.actMu.Unlock()
+		t.Fatalf("первое подключение не создалось: %v", err)
+	}
+	first := s.allocCtx
+	if s.allocWS != ws {
+		s.actMu.Unlock()
+		t.Fatalf("адрес не запомнился: %q", s.allocWS)
+	}
+	// Тот же Chrome — подключение переиспользуется, а не пересоздаётся на каждый вызов.
+	if err := s.ensureAlloc(); err != nil || s.allocCtx != first {
+		s.actMu.Unlock()
+		t.Fatal("подключение к тому же браузеру не должно пересоздаваться")
+	}
+	s.actMu.Unlock()
+
+	// Chrome перезапустили: адрес сменился.
+	ws = "ws://127.0.0.1:9222/devtools/browser/BBBB-2222"
+	s.actMu.Lock()
+	defer s.actMu.Unlock()
+	if err := s.ensureAlloc(); err != nil {
+		t.Fatalf("после перезапуска Chrome подключение не пересоздалось: %v", err)
+	}
+	if s.allocCtx == first {
+		t.Fatal("после смены адреса отладки подключение обязано быть новым — иначе браузер потерян до перезапуска движка")
+	}
+	if s.allocWS != ws {
+		t.Fatalf("новый адрес не запомнился: %q", s.allocWS)
+	}
+	if s.targetID != "" {
+		t.Error("привязка к вкладке старого браузера должна сбрасываться")
+	}
+}
+
+// Клик по НАДПИСИ — то, что делает человек, и то, чего агенту не хватало.
+//
+// Живой прогон на Telegram Web: get_html на большом SPA обрезается и упирается в таймаут,
+// модель начинает угадывать селекторы, а chromedp.Click ждёт несуществующий узел все 45 с.
+// Шесть таких попыток подряд — восемь минут в никуда. Схема обязана предлагать оба пути.
+func TestClickElementAcceptsTextAndSelector(t *testing.T) {
+	s := New("")
+	var spec *ToolSpec
+	for i, tl := range s.ToolsBrowserAct() {
+		if tl.Function.Name == "click_element" {
+			spec = &s.ToolsBrowserAct()[i]
+		}
+	}
+	if spec == nil {
+		t.Fatal("в паке browser.act нет click_element")
+	}
+	props, _ := spec.Function.Parameters["properties"].(map[string]any)
+	for _, want := range []string{"selector", "text"} {
+		if _, ok := props[want]; !ok {
+			t.Errorf("click_element должен принимать %q", want)
+		}
+	}
+	// Ни один из двух не обязателен по отдельности — обязателен ровно один, и это проверяет код.
+	if req, ok := spec.Function.Parameters["required"]; ok {
+		t.Errorf("click_element не может требовать %v: аргументов два и подходит любой", req)
+	}
+	if err := s.ClickText("  "); err == nil {
+		t.Error("пустой текст должен отвергаться до похода в браузер")
 	}
 }

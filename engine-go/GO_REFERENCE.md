@@ -28,7 +28,7 @@ Telegram User
 [Python Bot Layer — temporary glue during migration]
       │   (prompt building, agent runner, skills, render, Telegram I/O, memory)
       │
-      ├─► Brain (llama.cpp / Qwen-VL)  :8080          (unchanged — external)
+      ├─► Brain (llama.cpp / Qwen-VL)  :8083          (unchanged — external)
       │
       └─► Kibborg Go Engine            :8002 (or 8001 in prod)
             │
@@ -57,17 +57,121 @@ Telegram User
 ```
 engine-go/
 ├── go.mod
-├── main.go                 # HTTP server (health, full_trading_check, ticker_analysis, ...)
+├── main.go                 # Telegram polling, routing, /stop + /hands ДО очереди
+├── agent_loop.go           # слои 2–4 слойного агента: сбор рук, исполнение, ответ
+├── dispatcher.go           # слой 1: JSON-план {packs, plan, confirm, summary}
+├── packs.go                # паки инструментов + request_pack + бюджет схем
+├── guard.go                # ворота: Decision{Action, Risk, Rule, Reason}
+├── task.go                 # Task/TaskStatus/реестр chatID→activeTask/журналы
+├── pending.go              # неблокирующие подтверждения (метаданные на диск, шаги в RAM)
+├── handsmode.go            # рубильник safe/full (runtime-store, не settings.ini)
+├── toolresult.go           # ToolResult{Text, Status, Artifacts, Err}
+├── tools_local.go          # схемы паков trade / secops
+├── system_tools.go         # пак system: экран, окна, клавиатура, мышь, процессы, буфер
+├── desktop_windows.go      # WinAPI под пак system (GDI, SendInput, EnumWindows)
+├── desktop_other.go        # честные заглушки того же для не-Windows
+├── video.go                # слой видео: ffprobe/ffmpeg, речь кусками, кадры, свёртка, конвертация
+├── video_tools.go          # пак media со стороны main: analyze_video и соседи
+├── video_ingest.go         # ролик, присланный в чат: Telegram и Web одной трубой
+├── referent.go             # слой 0: «указание без предмета» → переспросить, а не угадывать
+├── compact.go              # /compact, автосжатие истории, учёт окна контекста
+├── telegram_menu.go        # setMyCommands + инлайн-панель /menu + callback_query
+├── jsonl.go                # hands.jsonl / tasks.jsonl + ротация
 ├── trading/
 │   ├── schema.go           # DecisionReport, ScoreBreakdown, etc. (canonical structs)
 │   ├── regime.go           # ClassifyRegime (full port of Python logic)
 │   ├── scoring.go          # ScoreLong / ScoreShort + components (ported)
 │   ├── brain.go            # AnalyzeSymbol — the main aggregator
-│   └── [future] risk.go, discipline.go, confidence.go, plan.go, probability.go ...
-├── tools/
-│   └── [future] browser.go, execution.go, rag.go ...
+│   └── risk.go, plan.go, confidence.go, sizing.go, indicators.go
+├── browser/                # Chrome CDP + терминал + файлы + reach; каталоги паков
+├── journal/, memory/, secops/
 └── GO_REFERENCE.md         # THIS FILE — the living spec
 ```
+
+### Слойный агент (2026-08)
+
+Полное ТЗ — `ТЗ_слойный_агент.md` в корне репозитория, рабочие правила — `AGENTS.md`.
+Инвариант «LLM не выдумывает числа» усилен: разбор графика со скриншота больше НЕ берёт
+цены из зрения — vision отдаёт только структуру и тикер, а числа приходят из `analyze_ticker`
+(Binance). Ворота (`guardToolCall`) стоят на фактическом tool-call, не на маршрутизации.
+
+### Рабочий стол и длина рук (2026-08-13)
+
+Пак `system` даёт агенту ПК целиком за пределами браузера: снимок настоящего экрана или окна,
+список окон, фокус, печать текста (любой алфавит — SendInput с KEYEVENTF_UNICODE), сочетания
+клавиш, мышь, процессы, запуск программ, буфер обмена. Всё через WinAPI из процесса агента,
+без внешних зависимостей.
+
+Две вещи, которые тут легко сломать обратно:
+
+- **Пиксели берутся из `CreateDIBSection`, а не из `GetDIBits`.** Измерено: `GetDIBits` на этой
+  машине отдаёт строки только для областей примерно до мегабайта, а на 3440×1440 возвращает 0
+  и при этом `GetLastError` = «операция выполнена успешно». Молчаливый ноль на полном экране
+  при рабочем снимке 500×500 — ровно тот баг, который проходит проверку «ну работает же».
+- **`launch_app` ждёт окно запущенной программы.** Без этого `type_keyboard` следующим шагом
+  печатает в то окно, что было активно ДО запуска, — на живом прогоне текст уехал мимо
+  Блокнота, а отчёт всё равно был «текст введён». Теперь все инструменты ввода называют окно,
+  в которое ушли символы, а `findWindowAll` при неоднозначности возвращает и остальных
+  кандидатов.
+
+Режимы рук переписаны: недостижимых действий больше нет. `safe` — рискованное спрашивает,
+ядерное отказывает; `full` — рискованное молча, ядерное спрашивает один раз. Промпт
+исполнителя зависит от режима (`armouryNote(packs, mode)`) — иначе рубильник переключает
+ворота, но не то, что модель о себе думает.
+
+`compact.go` даёт `/compact` и автосжатие: старая часть диалога пересказывается в сводку
+вместо того, чтобы молча вылететь из скользящего окна. Занятость контекста в панели — это
+`prompt_n` последнего запроса (считает llama.cpp), вес истории — оценка по символам; поля
+разные и не смешиваются.
+
+### Видео: контейнер, а не модальность (2026-08-13)
+
+Слоя «понимания видео» в движке нет и не планируется. Есть ffmpeg, который режет ролик на то,
+что движок уже умеет глотать: дорожка речи уходит в тот же STT, что и голосовые, кадры — в то
+же зрение, что и присланные картинки, метаданные читает ffprobe. Из этого следует всё остальное:
+
+- **Длина ролика упирается в диск, а не в контекст.** Один проход декодирования в 16 кГц моно
+  WAV, затем нарезка сегментным мультиплексором по 5 минут. Метки времени точны по построению
+  (PCM с постоянным битрейтом), исходник декодируется ровно один раз.
+- **В контекст модели уходит выжимка**, полная расшифровка — файлом рядом. Длинный текст
+  сворачивается картой-свёрткой: куски по 6000 символов, раунды повторяются, пока не влезет.
+  Измерено на живой модели: 22 800 → 584 символа за 17 с.
+- **Приоритет источников:** субтитры хостинга → субтитры внутри контейнера → распознавание.
+  Первые два бесплатны и точнее. Для ссылки без кадров качается только звук.
+- **Артефакты лежат в `runtime/browser/media`.** Не потому, что это красиво, а потому что
+  `/api/files` отдаёт панели только корень `runtime/browser`: файл мимо него остаётся без
+  ссылки. Пак `system` уже наступал на это (`runtime/browser/desktop`).
+
+Два дефекта в `chunkText` поймал тест, а не живой ролик, и оба стоили бы дорого: при остатке
+места в один символ отступ до пробела обнулял длину куска — цикл крутился вечно и вешал движок
+на пересказе; а при малом остатке слова дробились по буквам. Правило простое: если в остаток
+не влезает целое слово — закрывай кусок, а не добирай по символу.
+
+Проверка сделана на синтезированном ролике (SAPI наговаривает текст, слайд рисуется через
+System.Drawing) — ловушка «проверил на файле, которого нет у других» так не возникает:
+`video_live_test.go` запускается только с `KIBBORG_LIVE_MEDIA=путь`. На нём же видно, зачем
+нужны ОБА канала: распознавание услышало «Rectrade» вместо «Freqtrade», а зрение прочитало со
+слайда `github.com/freqtrade/freqtrade` дословно — и агент нашёл репозиторий.
+
+### Подключение к Chrome: четыре грабли, каждая измерена (2026-08-13)
+
+- **Первый `chromedp.Run` обязан идти на самом `pageCtx`.** `RemoteAllocator.Allocate` вешает
+  уборку на контекст, где произошла аллокация; передав туда дочерний контекст с таймаутом и
+  отменив его по `defer`, мы получали `target.CloseTarget` на вкладке, к которой только что
+  подключились. Единственная вкладка — и Chrome выходил целиком. Выглядело как «браузер умирает
+  от подключения агента». Таймаут теперь снаружи, в `select`, выход — через `detachPage`.
+- **Адрес отладки сверяется на каждом вызове.** В браузерном ws сидит идентификатор запуска;
+  после перезапуска Chrome закэшированный адрес отвечает 404, и агент терял браузер до
+  перезапуска движка.
+- **Порт бывает только на IPv6.** Chrome не всегда открывает 9222 на `127.0.0.1`;
+  `devtoolsGet` пробует и `[::1]`, запоминая рабочий. Прежде чем чинить код — посмотри
+  `Get-NetTCPConnection -LocalPort 9222`: два браузера на одном порту (IPv4 + IPv6) дают
+  разные списки вкладок и необъяснимые «no target with given id».
+- **Домен Network включается лениво**, а не при подключении: на живом приложении инструментовка
+  сети не нужна в 19 задачах из 20.
+
+`ClickText` ищет элемент по надписи через JS, а жмёт настоящим `Input.dispatchMouseEvent` —
+`el.click()` из JS Telegram Web игнорирует, и клик «успешно» не делает ничего.
 
 ## Key Data Model — DecisionReport (the contract)
 
@@ -113,12 +217,12 @@ The Go engine is now a **buildable, functional reference** for the core determin
   - GET /ticker_analysis
   - GET /tools
 - Demo data + example JSON in examples/ so you can immediately test end-to-end.
-- go build succeeds cleanly.
+- `build.cmd` succeeds cleanly (gofmt + go vet + staticcheck + go build).
 
 This is the future canonical implementation. The Python trading brain is now legacy. All new deterministic trading math goes here.
 
 **How to use as reference during migration:**
-1. go build -o kibborg-go-engine .
+1. build.cmd   (lint gate; do not use bare `go build` for release/start)
 2. ./kibborg-go-engine   (runs on :8002)
 3. Point a test bot with COMPUTER_TOOLS_URL=http://127.0.0.1:8002 (and matching key) and call full_trading_check or ticker_analysis.
 4. Compare DecisionReport output to the old Python version (they should be semantically identical for the same input timeframes).

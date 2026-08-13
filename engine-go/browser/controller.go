@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -117,6 +118,84 @@ func (s *Session) Click(selector string) error {
 		return fmt.Errorf("нужен CSS-селектор элемента")
 	}
 	return s.run(chromedp.Click(selector, chromedp.ByQuery, chromedp.NodeVisible))
+}
+
+// ClickText clicks the first visible element whose text matches — то, что делает человек.
+//
+// Живой прогон на Telegram Web показал, чего не хватало: get_html на большом SPA упирается в
+// таймаут и обрезается, модель начинает УГАДЫВАТЬ селекторы, а chromedp.Click ждёт несуществующий
+// узел все 45 секунд. Шесть таких попыток подряд — восемь минут в никуда. Кнопку «Сжать контекст»
+// человек находит по надписи, а не по классу; здесь то же самое, и делает это JS в самой странице,
+// без разрешения узлов через DevTools.
+//
+// Точное совпадение надписи имеет приоритет над вхождением: на странице с кнопками «Стоп» и
+// «Остановить всё» просьба нажать «Стоп» должна попадать в первую.
+func (s *Session) ClickText(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("нужен текст элемента")
+	}
+	raw, _ := json.Marshal(text)
+	js := `(() => {
+  const want = ` + string(raw) + `.trim().toLowerCase();
+  const norm = s => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const visible = el => {
+    if (!(el instanceof Element)) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const st = getComputedStyle(el);
+    return st.visibility !== "hidden" && st.display !== "none" && st.pointerEvents !== "none";
+  };
+  const clickable = "button,a,[role=button],[role=menuitem],[role=tab],input[type=button],input[type=submit],.btn,.button";
+  const pools = [Array.from(document.querySelectorAll(clickable)), Array.from(document.querySelectorAll("*"))];
+  for (const exact of [true, false]) {
+    for (const pool of pools) {
+      for (const el of pool) {
+        if (!visible(el)) continue;
+        const t = norm(el.innerText || el.textContent);
+        if (!t || t.length > 200) continue;
+        const hit = exact ? t === want : t.includes(want);
+        if (!hit) continue;
+        // Внутри найденного мог оказаться более точный вложенный элемент — берём самый глубокий,
+        // иначе клик уходит в контейнер и промахивается мимо кнопки.
+        let target = el;
+        for (const child of el.querySelectorAll(clickable)) {
+          if (visible(child) && norm(child.innerText || child.textContent).includes(want)) { target = child; break; }
+        }
+        target.scrollIntoView({block: "center"});
+        const r = target.getBoundingClientRect();
+        return JSON.stringify({
+          x: r.left + r.width / 2, y: r.top + r.height / 2,
+          tag: target.tagName.toLowerCase(),
+          label: norm(target.innerText || target.textContent).slice(0, 80),
+        });
+      }
+    }
+  }
+  return "MISS";
+})()`
+	var res string
+	if err := s.run(chromedp.Evaluate(js, &res)); err != nil {
+		return err
+	}
+	if res == "MISS" || res == "" {
+		return fmt.Errorf("на странице нет видимого элемента с текстом %q — проверь надпись через get_text", text)
+	}
+	var hit struct {
+		X, Y  float64
+		Tag   string
+		Label string
+	}
+	if err := json.Unmarshal([]byte(res), &hit); err != nil {
+		return fmt.Errorf("не разобрал координаты элемента: %w", err)
+	}
+	// Жмём НАСТОЯЩИМ событием мыши через CDP, а не el.click() из JS.
+	//
+	// Живой прогон на Telegram Web: JS-клик отрабатывал «успешно», а чат не открывался.
+	// Приложение слушает pointerdown/mousedown, и синтетический click мимо них проходит
+	// незамеченным. Отчёт при этом был бодрый — ровно тот сорт лжи, который здесь ловят.
+	// Поиск по надписи остаётся за JS (он видит текст), а нажатие делает браузер.
+	return s.run(chromedp.MouseClickXY(hit.X, hit.Y))
 }
 
 // TypeText focuses the selector and types text. When clearFirst is set the field is cleared

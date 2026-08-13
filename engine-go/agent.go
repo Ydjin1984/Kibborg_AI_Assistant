@@ -1,9 +1,8 @@
 package main
 
-// Browser agent: the tool-calling loop that lets the local LLM drive a real Chrome through
-// the browser package. The model selects tools (open_url, extract_table, …), we execute them
-// against the running browser, feed the results back, and repeat until it produces a final
-// answer. This is the "Работа по естественному языку" + "Tool Calling" part of the spec.
+// General-purpose tool agent: the local LLM picks tools (terminal, files, web search,
+// browser, Agent Reach…), we execute them, feed results back, and loop until a final answer.
+// Used by /browser, /agent, and (when enabled) ordinary chat that needs real-world actions.
 
 import (
 	"bytes"
@@ -17,49 +16,82 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"kibborg/engine/browser"
 )
 
-// browserSystemPrompt advertises the agent's full web arsenal and enforces the spec's rules:
-// DOM/network first, screenshots only on explicit request, never invent data, answer in Russian.
-const browserSystemPrompt = `Ты — Browser Agent внутри Kibborg: у тебя ПОЛНОЦЕННЫЙ веб-арсенал. Ты не просто читаешь страницу — ты ищешь в интернете, ходишь по сайтам, тянешь данные из DOM и сети, автоматизируешь действия, скачиваешь и сохраняешь результат. Управляешь уже открытым Google Chrome через Chrome DevTools Protocol. Отвечай по-русски.
+// agentSystemPromptBody is the static arsenal guide. Live clock is appended every call
+// via agentSystemPrompt() so the model never guesses the date from training data.
+// The pack-specific halves (the news pipeline, the browser tab rule, the trade numbers rule)
+// are appended per task by executorSystemPrompt — the model should read rules for the hands
+// it actually has, not for the whole arsenal.
+const agentSystemPromptBody = `Ты — Kibborg Agent: локальный ИИ-помощник С РЕАЛЬНЫМИ ИНСТРУМЕНТАМИ.
+Отвечай по-русски.
 
-ТВОЙ ИНСТРУМЕНТАРИЙ (выбирай сам, что нужно под задачу):
-- 🔎 Поиск в интернете: web_search — найти страницы по запросу (заголовок, URL, сниппет). Работает даже без открытого Chrome. Дальше открывай нужную ссылку через open_url.
-- 🧭 Навигация и вкладки: list_tabs, open_url, switch_tab, close_page.
-- 🧩 Данные из DOM: analyze_dom, get_text, get_html, get_attributes, extract_links, extract_images, extract_table, extract_forms, extract_json.
-- 🌐 Сеть напрямую: get_network_requests (XHR/Fetch/Document…), get_websocket_messages, get_response_body — часто данные удобнее взять из API-ответов сайта, чем парсить HTML.
-- 🔐 Состояние: get_cookies, get_storage (local/session).
-- 🖱 Действия: click_element, type_text, select_option, submit_form, scroll_page, upload_file, drag_element — заполнить форму, авторизоваться, нажать кнопки.
-- 💾 Сохранение: download_file, download_video (YouTube/Instagram/TikTok… в макс. качестве), clone_website, capture_screenshot.
-- 📤 Экспорт таблиц/данных: json / records / csv / markdown (через extract_table).
+══════════════════════════════════════
+⛔ КРИТИЧЕСКИ ВАЖНО (нарушение = ошибка)
+══════════════════════════════════════
+1. Инструменты у тебя настоящие (run_command, web_search, read_url и др. — по активным пакам).
+   НИКОГДА не говори «нет доступа к интернету/консоли».
+2. Дата/время → блок «СЕЙЧАС» ниже или run_command (Get-Date / date). Не угадывай из обучения.
+3. Нет данных от инструментов → скажи «не нашёл». Не сочиняй факты, числа и ссылки.
+4. Инструмент вернул статус denied / blocked → это решение системы безопасности, а не сбой:
+   не повторяй тот же вызов, предложи альтернативу.
+   Статус timeout → состояние неизвестно, проверь результат, а не повторяй вслепую.
+5. Отвечай человеку по делу: что сделал, что получилось, откуда данные.
 
-КАК РАБОТАТЬ:
-- Нужного сайта нет в открытых вкладках? Сначала web_search, затем open_url по лучшей ссылке (или open_url сразу, если знаешь адрес).
-- Сориентируйся (list_tabs / analyze_dom), потом тяни данные из DOM и сети — это основной источник.
-- Ссылка на YouTube / Instagram / TikTok / X и просят скачать видео → сразу download_video (не open_url и не download_file).
-- Скриншоты (capture_screenshot) — ТОЛЬКО если пользователь явно просит визуальный анализ (график, картинка, «как выглядит страница»). Иначе не делай.
-- Новый браузер не запускай, работай с уже открытым Chrome. Для действий — точные CSS-селекторы.
-- Никогда не выдумывай данные: сообщай только то, что реально вернули инструменты. Нет данных — так и скажи.
-- Действуй минимальным числом шагов. Когда задача выполнена — дай краткий понятный итог по-русски.`
+Формат ответа на новости/факты: список пунктов «- **Факт** … Источник: [заголовок](url)».
+Без воды и без «рекомендую мониторить эти сайты» вместо фактов.`
 
-const maxAgentSteps = 8
+// agentSystemPrompt returns the full system prompt with a live local clock line.
+func agentSystemPrompt() string {
+	now := time.Now()
+	// Russian weekday via fixed map (avoid locale deps).
+	wd := []string{"воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"}[int(now.Weekday())]
+	clock := fmt.Sprintf(
+		"\n\n══════════════════════════════════════\n⏱ СЕЙЧАС (часы этого ПК, источник истины для даты/времени)\n══════════════════════════════════════\n"+
+			"%s, %s\nЧасовой пояс: %s\nUnix: %d\n"+
+			"Если нужна проверка — run_command: Get-Date -Format o   (Windows) или date -Iseconds (Linux/macOS).",
+		wd,
+		now.Format("02.01.2006 15:04:05"),
+		now.Location().String(),
+		now.Unix(),
+	)
+	return agentSystemPromptBody + clock
+}
+
+const (
+	maxAgentSteps = 12
+	// Keep agent prompts inside a 32k context: chat templates expand tool schemas heavily.
+	agentMaxHistMsgs  = 6    // last N user/assistant turns (excl. system)
+	agentMaxMsgChars  = 3500 // per history/memory message
+	agentMaxToolChars = 6000 // per tool result fed back to the model
+	agentMaxMemBlocks = 1    // at most one memory system block
+	agentMaxMemChars  = 1500
+	// Soft budget for the whole tool-loop prompt (chars). Leave headroom for generation
+	// and chat-template tool expansion under LLAMA_CTX_SIZE=32768.
+	agentSoftBudgetChars = 48_000
+)
 
 var (
 	browserMu      sync.Mutex
 	browserSession *browser.Session
 )
 
-// browserTaskMu serializes whole browser tasks. The Chrome session is process-wide (one
-// attached tab, one shared artifact buffer), so two concurrent /browser requests from
-// different chats would fight over the tab and cross-deliver each other's screenshots.
-// One task at a time keeps the session coherent; other chats' non-browser work is unaffected.
+// browserTaskMu serializes whole agent tasks (shared Chrome session + artifact buffer).
 var browserTaskMu sync.Mutex
 
-// getBrowserSession returns the process-wide browser session (lazily created). It attaches to
-// Chrome on first tool use, not here. ffmpegPath is applied when the session is first created
-// (and refreshed if already live) so download_video can mux best video+audio.
+// Last URLs found by tools for each chat — so follow-ups like «прочитай всё / выжимка»
+// don't lose the search hits (history only stores final prose, not tool JSON).
+var (
+	agentURLMu  sync.Mutex
+	agentURLBag = map[int64][]string{}
+)
+
+const agentURLBagMax = 12
+
 func getBrowserSession() *browser.Session {
 	return getBrowserSessionWithFFmpeg("")
 }
@@ -76,8 +108,6 @@ func getBrowserSessionWithFFmpeg(ffmpegPath string) *browser.Session {
 	return browserSession
 }
 
-// closeBrowserSession detaches from Chrome (used by graceful shutdown). The user's tabs
-// stay open — Session.Close only releases the DevTools attachment.
 func closeBrowserSession() {
 	browserMu.Lock()
 	defer browserMu.Unlock()
@@ -87,57 +117,408 @@ func closeBrowserSession() {
 	}
 }
 
-// runBrowserAgent executes one natural-language browser task and returns the final text plus
-// any artifacts (screenshots/clones/downloads/videos) produced along the way.
-func runBrowserAgent(cfg Config, task string) (string, []string) {
-	browserTaskMu.Lock()
-	defer browserTaskMu.Unlock()
-	sess := getBrowserSessionWithFFmpeg(cfg.FfmpegPath)
-	msgs := []map[string]any{
-		{"role": "system", "content": browserSystemPrompt},
-		{"role": "user", "content": task},
-	}
-	tools := sess.Tools()
-
-	var lastText string
-	for step := 0; step < maxAgentSteps; step++ {
-		msg, err := llmChatTools(cfg.BrainPort, msgs, tools, 0.3)
-		if err != nil {
-			log.Printf("[BROWSER] llm error: %v", err)
-			return "❌ Ошибка модели: " + err.Error(), sess.TakeArtifacts()
-		}
-		if len(msg.ToolCalls) == 0 {
-			lastText = msg.Content
-			break
-		}
-		msgs = append(msgs, assistantToolMsg(msg))
-		for _, tc := range msg.ToolCalls {
-			result := executeToolCall(sess, tc)
-			msgs = append(msgs, map[string]any{
-				"role":         "tool",
-				"tool_call_id": tc.ID,
-				"name":         tc.Function.Name,
-				"content":      result,
-			})
-		}
-	}
-
-	// If we exhausted the step budget (or got no prose), force a no-tools summary so the user
-	// always gets a readable answer instead of silence.
-	if strings.TrimSpace(lastText) == "" {
-		msgs = append(msgs, map[string]any{"role": "user", "content": "Подведи краткий итог по-русски на основе собранных данных."})
-		if summary, err := llmChatTools(cfg.BrainPort, msgs, nil, 0.3); err == nil {
-			lastText = summary.Content
-		}
-	}
-	if strings.TrimSpace(lastText) == "" {
-		lastText = "Готово, но модель не вернула текстовый итог. Повтори запрос конкретнее."
-	}
-	return lastText, sess.TakeArtifacts()
+// runAgent is THE entry point for both channels: text or voice, slash or free chat, all go
+// through the dispatcher (§4). Slash commands are hints, not a bypass.
+func runAgent(cfg Config, actor Actor, baseMsgs []map[string]any, task string, status func(string)) agentResult {
+	return runLayeredAgent(agentRequest{
+		cfg:        cfg,
+		actor:      actor,
+		baseMsgs:   baseMsgs,
+		input:      task,
+		status:     status,
+		memSummary: memorySummaryFor(actor.ChatID),
+	})
 }
 
-// assistantToolMsg rebuilds the assistant turn (with its tool_calls) as a generic map so the
-// follow-up role:"tool" results line up with their call ids.
+// readFollowUpHint is appended to the user's text when they ask for a digest of what was
+// already found: the URL bag is the answer, not another request for links.
+func readFollowUpHint(chatID int64, task string) string {
+	if !looksLikeReadFollowUp(task) {
+		return task
+	}
+	urls := getAgentURLs(chatID)
+	if len(urls) == 0 {
+		return task + "\n\n(Сначала web_search по теме, затем read_url на 3–5 конкретных статей из выдачи, " +
+			"затем выжимка с URL. НЕ проси пользователя прислать ссылки.)"
+	}
+	return task + "\n\n(Сделай выжимку: вызови read_url на эти URL по очереди, затем список фактов " +
+		"с markdown-ссылкой на каждый источник. НЕ проси меня прислать ссылки:\n" + strings.Join(urls, "\n") + ")"
+}
+
+// shrinkAgentMsgs drops history/memory and optionally keeps only system + task + last tool pair.
+func shrinkAgentMsgs(msgs []map[string]any, sys, task string, keepLastTools bool) []map[string]any {
+	out := []map[string]any{{"role": "system", "content": sys}}
+	if keepLastTools && len(msgs) > 2 {
+		// Keep last assistant(tool_calls)+tool results (up to 6 msgs).
+		start := len(msgs) - 6
+		if start < 1 {
+			start = 1
+		}
+		tail := compactToolMessages(msgs[start:])
+		for _, m := range tail {
+			role, _ := m["role"].(string)
+			if role == "system" {
+				continue
+			}
+			out = append(out, m)
+		}
+	}
+	// Ensure the original task is still present if not already last user msg.
+	if strings.TrimSpace(task) != "" {
+		needTask := true
+		for _, m := range out {
+			if role, _ := m["role"].(string); role == "user" {
+				if c, _ := m["content"].(string); strings.Contains(c, task) || c == task {
+					needTask = false
+					break
+				}
+			}
+		}
+		if needTask {
+			out = append(out, map[string]any{"role": "user", "content": task})
+		}
+	}
+	return out
+}
+
+func slimForSummary(msgs []map[string]any, sys string) []map[string]any {
+	out := []map[string]any{{"role": "system", "content": sys}}
+	if len(msgs) <= 1 {
+		return out
+	}
+	// Prefer tool results + short assistant notes from the loop.
+	var picked []map[string]any
+	for _, m := range msgs[1:] {
+		role, _ := m["role"].(string)
+		switch role {
+		case "tool":
+			c := capAgentText(msgContentString(m["content"]), 1500)
+			picked = append(picked, map[string]any{
+				"role":         "tool",
+				"tool_call_id": m["tool_call_id"],
+				"name":         m["name"],
+				"content":      c,
+			})
+		case "assistant":
+			// Skip raw tool_calls blobs in summary — only free text if any.
+			if _, has := m["tool_calls"]; has {
+				continue
+			}
+			c := capAgentText(msgContentString(m["content"]), 800)
+			if c != "" {
+				picked = append(picked, map[string]any{"role": "assistant", "content": c})
+			}
+		case "user":
+			c := capAgentText(msgContentString(m["content"]), 500)
+			if c != "" {
+				picked = append(picked, map[string]any{"role": "user", "content": c})
+			}
+		}
+	}
+	if len(picked) > 8 {
+		picked = picked[len(picked)-8:]
+	}
+	// Summary without tools: convert tool roles to plain user notes (cleaner for no-tools call).
+	for _, m := range picked {
+		role, _ := m["role"].(string)
+		if role == "tool" {
+			name, _ := m["name"].(string)
+			out = append(out, map[string]any{
+				"role":    "user",
+				"content": "Результат " + name + ":\n" + msgContentString(m["content"]),
+			})
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// estimateAgentChars is a rough size of messages+tools JSON (not real tokens, but enough
+// to stay under 32k when chat templates expand schemas ~2–3×).
+func estimateAgentChars(msgs []map[string]any, tools any) int {
+	n := 0
+	for _, m := range msgs {
+		b, _ := json.Marshal(m)
+		n += len(b)
+	}
+	if tools != nil {
+		b, _ := json.Marshal(tools)
+		// Tool schemas are expanded heavily by jinja chat templates.
+		n += len(b) * 3
+	}
+	return n
+}
+
+// packAgentMessages builds a tight message list: live agent system + optional 1 memory block
+// + last few history turns (capped) + current user task. Drops the default chat system prompt.
+func packAgentMessages(base []map[string]any, sys, task string) []map[string]any {
+	out := make([]map[string]any, 0, 12)
+	out = append(out, map[string]any{"role": "system", "content": sys})
+
+	if len(base) > 1 {
+		var mem []map[string]any
+		var hist []map[string]any
+		for _, m := range base[1:] {
+			role, _ := m["role"].(string)
+			content := msgContentString(m["content"])
+			if role == "system" {
+				// Memory / injected system blocks — keep at most one, capped.
+				if len(mem) >= agentMaxMemBlocks {
+					continue
+				}
+				content = capAgentText(content, agentMaxMemChars)
+				if content == "" {
+					continue
+				}
+				mem = append(mem, map[string]any{"role": "system", "content": content})
+				continue
+			}
+			if role != "user" && role != "assistant" {
+				continue
+			}
+			content = capAgentText(content, agentMaxMsgChars)
+			if content == "" {
+				continue
+			}
+			hist = append(hist, map[string]any{"role": role, "content": content})
+		}
+		out = append(out, mem...)
+		if len(hist) > agentMaxHistMsgs {
+			hist = hist[len(hist)-agentMaxHistMsgs:]
+		}
+		out = append(out, hist...)
+	}
+
+	if strings.TrimSpace(task) != "" {
+		out = append(out, map[string]any{"role": "user", "content": strings.TrimSpace(task)})
+	}
+	return out
+}
+
+func msgContentString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+func capAgentText(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+func isContextOverflow(err error) bool {
+	return isContextBad(err)
+}
+
+// isContextBad matches llama-server failures around context size AND prompt-cache
+// invalidation (log line: "erased invalidated context checkpoint").
+func isContextBad(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return (strings.Contains(s, "exceed") && strings.Contains(s, "context")) ||
+		strings.Contains(s, "exceed_context_size") ||
+		strings.Contains(s, "context size") ||
+		strings.Contains(s, "n_prompt_tokens") ||
+		strings.Contains(s, "invalidat") ||
+		strings.Contains(s, "invalid context") ||
+		strings.Contains(s, "context checkpoint") ||
+		strings.Contains(s, "kv cache") ||
+		strings.Contains(s, "n_ctx")
+}
+
+// compactToolMessages shrinks older tool results, keeping the latest few intact.
+func compactToolMessages(msgs []map[string]any) []map[string]any {
+	// Count tool messages from the end; shrink all but the last 4 tool payloads.
+	toolIdxs := make([]int, 0, 8)
+	for i, m := range msgs {
+		if role, _ := m["role"].(string); role == "tool" {
+			toolIdxs = append(toolIdxs, i)
+		}
+	}
+	if len(toolIdxs) <= 4 {
+		return msgs
+	}
+	for _, i := range toolIdxs[:len(toolIdxs)-4] {
+		if c, ok := msgs[i]["content"].(string); ok && len(c) > 400 {
+			msgs[i]["content"] = capAgentText(c, 400)
+		}
+	}
+	return msgs
+}
+
+// wantsToolAgent: free-text chat always uses the tool agent when tools are enabled for
+// the channel (allowlist Telegram / localhost Web).
+func wantsToolAgent(text string) bool {
+	return strings.TrimSpace(text) != ""
+}
+
+// looksLikeNewsOrResearch is true when the task needs search+read, not a bare greeting.
+func looksLikeNewsOrResearch(text string) bool {
+	t := strings.ToLower(text)
+	keys := []string{
+		"новост", "news", "что происходит", "что случилось", "сегодня", "свеж",
+		"последн", "рынок", "крипт", "bitcoin", "btc", "eth", "курс", "цена",
+		"найди", "поищи", "search", "заголовк", "статья", "обзор", "дай данные",
+		"с числами", "ликвидац", "etf", "рейтинг",
+	}
+	for _, k := range keys {
+		if strings.Contains(t, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeReadFollowUp: user wants digests/sources from already-found or findable articles.
+func looksLikeReadFollowUp(text string) bool {
+	t := strings.ToLower(text)
+	keys := []string{
+		"прочитай", "прочти", "выжимк", "с источник", "со ссылк", "дай ссыл",
+		"подробн", "разверн", "все новости", "прочитай все", "прочти все",
+		"read all", "summary", "summar", "цитат", "по каждой",
+	}
+	for _, k := range keys {
+		if strings.Contains(t, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldForceRead forces another tool step if the model tries to answer news without reading pages.
+func shouldForceRead(task string, didSearch, didRead bool, step int) bool {
+	if step >= 4 {
+		return false // avoid infinite nudge loops
+	}
+	if didRead {
+		return false
+	}
+	if looksLikeReadFollowUp(task) {
+		return true
+	}
+	if looksLikeNewsOrResearch(task) && (didSearch || step < 2) {
+		return true
+	}
+	return false
+}
+
+func rememberToolURLs(chatID int64, toolName, result, argsJSON string) {
+	if chatID == 0 {
+		return
+	}
+	var found []string
+	found = append(found, extractHTTPURLs(result)...)
+	found = append(found, extractHTTPURLs(argsJSON)...)
+	if len(found) == 0 {
+		return
+	}
+	agentURLMu.Lock()
+	defer agentURLMu.Unlock()
+	cur := agentURLBag[chatID]
+	seen := map[string]bool{}
+	for _, u := range cur {
+		seen[u] = true
+	}
+	for _, u := range found {
+		u = strings.TrimRight(u, ".,);]>\"'")
+		if u == "" || seen[u] {
+			continue
+		}
+		// Skip pure search engines / homepages noise somewhat
+		low := strings.ToLower(u)
+		if strings.Contains(low, "duckduckgo.com") || strings.Contains(low, "google.com/search") {
+			continue
+		}
+		seen[u] = true
+		cur = append(cur, u)
+	}
+	if len(cur) > agentURLBagMax {
+		cur = cur[len(cur)-agentURLBagMax:]
+	}
+	agentURLBag[chatID] = cur
+	_ = toolName
+}
+
+func getAgentURLs(chatID int64) []string {
+	agentURLMu.Lock()
+	defer agentURLMu.Unlock()
+	src := agentURLBag[chatID]
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
+func agentURLBagNote(chatID int64) string {
+	urls := getAgentURLs(chatID)
+	if len(urls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("══════════════════════════════════════\n")
+	b.WriteString("URL из прошлого поиска (используй read_url; НЕ проси пользователя)\n")
+	b.WriteString("══════════════════════════════════════\n")
+	for i, u := range urls {
+		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, u))
+	}
+	return b.String()
+}
+
+func clearAgentURLs(chatID int64) {
+	agentURLMu.Lock()
+	delete(agentURLBag, chatID)
+	agentURLMu.Unlock()
+}
+
+// extractHTTPURLs pulls http(s) URLs from free text / JSON tool output.
+func extractHTTPURLs(s string) []string {
+	if s == "" {
+		return nil
+	}
+	// Simple scanner: find http:// or https:// and take until whitespace/quote.
+	var out []string
+	for i := 0; i < len(s); {
+		idx := strings.Index(s[i:], "http://")
+		idxS := strings.Index(s[i:], "https://")
+		start := -1
+		if idx >= 0 && (idxS < 0 || idx < idxS) {
+			start = i + idx
+		} else if idxS >= 0 {
+			start = i + idxS
+		}
+		if start < 0 {
+			break
+		}
+		end := start
+		for end < len(s) {
+			c := s[end]
+			if c <= ' ' || c == '"' || c == '\'' || c == '<' || c == '>' || c == ')' || c == ']' || c == '}' || c == ',' {
+				break
+			}
+			end++
+		}
+		u := s[start:end]
+		u = strings.TrimRight(u, ".,;:")
+		if len(u) > 12 {
+			out = append(out, u)
+		}
+		i = end
+	}
+	return out
+}
+
 func assistantToolMsg(m assistantMsg) map[string]any {
 	calls := make([]map[string]any, 0, len(m.ToolCalls))
 	for _, c := range m.ToolCalls {
@@ -151,24 +532,6 @@ func assistantToolMsg(m assistantMsg) map[string]any {
 		})
 	}
 	return map[string]any{"role": "assistant", "content": m.Content, "tool_calls": calls}
-}
-
-// executeToolCall parses the model's arguments and runs the tool, returning a string the
-// model will read. Failures come back as text (not Go errors) so the loop can recover.
-func executeToolCall(sess *browser.Session, tc toolCall) string {
-	args := map[string]any{}
-	raw := strings.TrimSpace(tc.Function.Arguments)
-	if raw != "" && raw != "null" {
-		if err := json.Unmarshal([]byte(raw), &args); err != nil {
-			return "Ошибка разбора аргументов JSON: " + err.Error()
-		}
-	}
-	log.Printf("[BROWSER] tool %s(%s)", tc.Function.Name, capLog(raw))
-	res, err := sess.Dispatch(tc.Function.Name, args)
-	if err != nil {
-		return "Ошибка инструмента " + tc.Function.Name + ": " + err.Error()
-	}
-	return res
 }
 
 func capLog(s string) string {
@@ -191,19 +554,18 @@ func sendArtifacts(botAPI string, chatID int64, paths []string) {
 		switch {
 		case ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp":
 			if err := sendTelegramPhotoFile(botAPI, chatID, p, ""); err != nil {
-				log.Printf("[BROWSER] send photo %s failed: %v", p, err)
+				log.Printf("[AGENT] send photo %s failed: %v", p, err)
 				leftovers = append(leftovers, p)
 			}
 		case isVideoExt(ext):
 			if err := sendTelegramVideoFile(botAPI, chatID, p, filepath.Base(p)); err != nil {
-				log.Printf("[BROWSER] send video %s failed: %v", p, err)
+				log.Printf("[AGENT] send video %s failed: %v", p, err)
 				leftovers = append(leftovers, p)
 			}
 		default:
-			// Try as document if small enough; else just report the path.
 			if fi, err := os.Stat(p); err == nil && fi.Size() <= telegramBotUploadLimit {
 				if err := sendTelegramDocumentFile(botAPI, chatID, p, ""); err != nil {
-					log.Printf("[BROWSER] send document %s failed: %v", p, err)
+					log.Printf("[AGENT] send document %s failed: %v", p, err)
 					leftovers = append(leftovers, p)
 				}
 			} else {
@@ -233,7 +595,6 @@ func sendTelegramVideoFile(botAPI string, chatID int64, path, caption string) er
 	if fi.Size() > telegramBotUploadLimit {
 		return fmt.Errorf("файл %.1f МБ > лимита Telegram Bot API (~50 МБ)", float64(fi.Size())/(1<<20))
 	}
-	// Prefer sendVideo for mp4; fall back to document for other containers.
 	method := "sendDocument"
 	field := "document"
 	if strings.EqualFold(filepath.Ext(path), ".mp4") {
@@ -256,7 +617,6 @@ func sendTelegramDocumentFile(botAPI string, chatID int64, path, caption string)
 }
 
 // sendTelegramMultipartFile is the shared multipart uploader for photo/video/document.
-// Telegram often returns HTTP 200 with {"ok":false,"description":…} — we parse the body.
 func sendTelegramMultipartFile(botAPI, method, field string, chatID int64, path, caption string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {

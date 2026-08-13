@@ -1,36 +1,25 @@
-# Kibborg Go Engine (migration in progress)
+# Kibborg Go Engine
 
-This is the start of the Go port of the deterministic trading brain and tools server.
+Это рабочий каталог продукта. Полная инструкция — в корне репозитория:
 
-## Why
-- Remove Python process overhead for the part that must never hallucinate numbers.
-- Better performance, typing, and concurrency for the heavy trading math.
-- Single (or small number of) static binaries instead of multiple venvs.
+**[→ README.md](../README.md)**
 
-## Current status
-- Stub HTTP server on :8002
-- `/health`
-- `/full_trading_check` (returns a minimal DecisionReport stub)
-- Core schema ported (`trading/schema.go`)
-- Minimal brain stub (`trading/brain.go`)
+Коротко:
 
-## How to run (during development)
-```bash
-cd engine-go
-go run main.go
+| Файл | Зачем |
+|---|---|
+| `Menu.cmd` | скачать модель, настройки, сборка, старт, Chrome с отладкой |
+| `Start.cmd` / `Stop.cmd` | поднять / погасить стек |
+| `build.cmd` | lint + сборка (`gofmt` → `vet` → `staticcheck` → `go build`) |
+| `settings.ini.example` | скопировать в `settings.ini` и заполнить |
+
+```powershell
+copy settings.ini.example settings.ini
+notepad settings.ini
+.\build.cmd
+.\Start.cmd
 ```
 
-The Python bot can point `COMPUTER_TOOLS_URL=http://127.0.0.1:8002` (and adjust key if needed) to test the Go side while the real Python engine stays on 8001.
+Панель: http://127.0.0.1:8090
 
-## Migration order (see PYTHON_TO_GO_MIGRATION_PLAN.md)
-1. Trading brain + DecisionReport (this)
-2. Rest of computer-tools tools surface
-3. (much later) bot orchestration if desired
-
-## Next concrete steps
-- Port regime_classifier, scoring, risk, discipline, confidence calibration from Python.
-- Add real data sources (Binance candles, etc.).
-- Make full_trading_check and other tools return 100% identical output to the Python version (characterization).
-- Add proper auth (same Bearer key as Python engine).
-
-All numbers that ever reach the LLM must still come from this (Go) code.
+Модели (`models/`), `settings.ini`, `runtime/` и `*.exe` в git не входят.

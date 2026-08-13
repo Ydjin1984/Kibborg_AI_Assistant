@@ -117,15 +117,10 @@ func (s *Session) CloneWebsite(outDir string) (CloneResult, error) {
 	return CloneResult{Dir: outDir, Page: pageURL, Counts: c.counts, Total: len(c.seen), Errors: c.errs}, nil
 }
 
-// fetch downloads one asset (resolving rawRef against the page base), stores it under the
+// fetchAs downloads one asset (resolving rawRef against the page base), stores it under the
 // right subfolder, and returns the local relative path to use in the rewritten HTML. It
-// dedups by absolute URL and skips data:/about:/javascript: refs.
-func (c *cloner) fetch(rawRef string) string {
-	return c.fetchAs(rawRef, "")
-}
-
-// fetchAs is fetch with an optional category hint ("css") for assets whose URL path has no
-// tell-tale extension but whose HTML context (link rel=stylesheet, @import) fixes the type.
+// dedups by absolute URL and skips data:/about:/javascript: refs. Optional category hint
+// ("css") is for assets whose URL path has no extension but HTML context fixes the type.
 func (c *cloner) fetchAs(rawRef, hint string) string {
 	rawRef = strings.TrimSpace(rawRef)
 	if rawRef == "" || strings.HasPrefix(rawRef, "data:") || strings.HasPrefix(rawRef, "about:") || strings.HasPrefix(rawRef, "javascript:") || strings.HasPrefix(rawRef, "#") {

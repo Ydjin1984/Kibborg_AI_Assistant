@@ -32,7 +32,7 @@ pause
 goto :eof
 
 :LoadSettings
-set PORT_BRAIN=8080
+set PORT_BRAIN=8083
 set PORT_ENGINE=8002
 
 if exist settings.ini (

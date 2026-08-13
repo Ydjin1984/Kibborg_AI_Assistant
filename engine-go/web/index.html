@@ -68,6 +68,14 @@
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
   #stateBar .metric b { color: var(--text); font-variant-numeric: tabular-nums; }
   #stateBar .sep { opacity: .4; }
+  /* Счётчик контекста: полоса заполнения + числа. Цвет меняется по мере заполнения,
+     чтобы «пора сжимать» было видно, не читая цифр. */
+  #ctxMeter { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  #ctxBar { width: 120px; height: 7px; border-radius: 4px; background: var(--border); overflow: hidden; flex: none; }
+  #ctxFill { height: 100%; width: 0%; background: var(--green); transition: width .4s ease, background .4s ease; }
+  #ctxMeter.warn #ctxFill { background: #d8a13a; }
+  #ctxMeter.hot  #ctxFill { background: #d9534f; }
+  #ctxMeter .metric { cursor: help; }
   .composer { display: flex; gap: 8px; padding: 12px 18px; background: var(--panel); border-top: 1px solid var(--border); align-items: flex-end; }
   .composer textarea {
     flex: 1; resize: none; background: var(--panel2); border: 1px solid var(--border); color: var(--text);
@@ -102,6 +110,15 @@
     padding: 0 14px; font: inherit; cursor: pointer;
   }
   button.ghost:hover { color: var(--text); border-color: var(--muted); }
+  button.icon-btn.mic-on {
+    color: #fff; background: #c0392b; border-color: #c0392b;
+    box-shadow: 0 0 0 3px rgba(192,57,43,.25);
+    animation: micPulse 1.1s ease-in-out infinite;
+  }
+  @keyframes micPulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(192,57,43,.2); }
+    50% { box-shadow: 0 0 0 7px rgba(192,57,43,.08); }
+  }
 
   /* Анализ */
   .analyze-wrap { padding: 18px; overflow-y: auto; }
@@ -148,12 +165,14 @@
     <div class="chip"><span class="dot" id="dotBrain"></span><span id="chipBrain">мозг…</span></div>
     <div class="chip"><span class="dot" id="dotChrome"></span><span id="chipChrome">Chrome…</span></div>
     <div class="chip"><span class="dot" id="dotWhisper"></span><span id="chipWhisper">голос…</span></div>
+    <!-- Рубильник рук (ТЗ §6.4): runtime-store, один и тот же для Web и Telegram /hands. -->
+    <button class="chip" id="handsBtn" title="Длина рук: короткие — опасное спрашивает подтверждение; длинные — весь ПК без вопросов (ядерное переспрашивается один раз)">🛡 руки: короткие</button>
   </div>
 </header>
 <nav>
   <button class="active" data-tab="chat">💬 Чат</button>
   <button data-tab="analyze">📊 Анализ</button>
-  <button data-tab="browser">🌐 Браузер</button>
+  <button data-tab="browser">🛠 Агент</button>
   <button data-tab="video">🎬 Видео</button>
   <button data-tab="status">🩺 Статус</button>
 </nav>
@@ -165,13 +184,20 @@
       <span class="metric" id="stateLive"></span>
       <span class="sep">│</span>
       <span class="metric" id="stateLast">скорость появится после первого ответа</span>
+      <span id="ctxMeter" title="Окно контекста модели: занято / всего токенов">
+        <span class="metric" id="ctxText">контекст: —</span>
+        <span id="ctxBar"><span id="ctxFill"></span></span>
+      </span>
     </div>
     <div id="attachBar"></div>
     <div class="composer">
-      <button class="icon-btn" id="attachBtn" title="Прикрепить картинку или файл (или перетащи / вставь Ctrl+V)">📎</button>
-      <input type="file" id="fileInput" accept="image/*,.go,.py,.js,.ts,.tsx,.jsx,.rs,.c,.h,.cpp,.java,.kt,.cs,.rb,.php,.swift,.sh,.ps1,.bat,.cmd,.sql,.html,.css,.scss,.json,.yaml,.yml,.toml,.ini,.xml,.md,.csv,.txt,.log,.env,.conf" style="display:none">
-      <textarea id="input" rows="1" placeholder="Сообщение · ссылка на видео · /browser · /download · /chart+картинка…"></textarea>
+      <button class="icon-btn" id="attachBtn" title="Прикрепить картинку, видео или файл (или перетащи / вставь Ctrl+V)">📎</button>
+      <button class="icon-btn" id="micBtn" title="Голос: зажми, говори, отпусти — распознаю и отвечу (TypeWhisper / whisper)">🎙</button>
+      <input type="file" id="fileInput" accept="image/*,audio/*,video/*,.mp4,.mov,.mkv,.avi,.m4v,.wmv,.webm,.ogg,.oga,.mp3,.wav,.m4a,.go,.py,.js,.ts,.tsx,.jsx,.rs,.c,.h,.cpp,.java,.kt,.cs,.rb,.php,.swift,.sh,.ps1,.bat,.cmd,.sql,.html,.css,.scss,.json,.yaml,.yml,.toml,.ini,.xml,.md,.csv,.txt,.log,.env,.conf" style="display:none">
+      <textarea id="input" rows="1" placeholder="Сообщение · найди… · запусти… · разбери видео · /agent · 🎙…"></textarea>
       <button class="primary" id="send">Отправить</button>
+      <button class="ghost" id="stopBtn" title="Остановить текущую задачу агента (аналог /stop)">⏹ Стоп</button>
+      <button class="ghost" id="compactBtn" title="Сжать историю диалога в сводку: старое пересказывается, свежее остаётся дословно (аналог /compact)">🗜 Сжать</button>
       <button class="ghost" id="reset" title="Очистить контекст диалога">Сброс</button>
     </div>
   </section>
@@ -200,11 +226,13 @@
   <section class="tab" id="tab-browser">
     <div class="analyze-wrap">
       <p class="hint" style="margin-bottom:12px;color:var(--muted);font-size:13px">
-        Тот же Browser Agent, что и <code>/browser</code> в Telegram. Chrome с
-        <code>--remote-debugging-port=9222</code>. Можно также писать в чате: <code>/browser …</code>
+        Полный агент (как <code>/agent</code> / <code>/browser</code> в Telegram): терминал, файлы,
+        поиск, <code>read_url</code>, Agent Reach, Chrome CDP.
+        Chrome нужен только для вкладок: <code>--remote-debugging-port=9222</code>.
+        В обычном чате: «найди…», «запусти…», «прочитай файл…».
       </p>
       <div class="analyze-bar">
-        <input id="browserTask" placeholder="Задача: собери таблицу с открытой вкладки…" style="flex:1;width:auto;min-width:280px;text-transform:none">
+        <input id="browserTask" placeholder="Задача: найди статьи / dir D:\ / таблица с вкладки…" style="flex:1;width:auto;min-width:280px;text-transform:none">
         <button class="primary" id="browserRun">Выполнить</button>
       </div>
       <div id="browserOut" style="display:none;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;white-space:pre-wrap;word-break:break-word;margin-top:12px"></div>
@@ -216,7 +244,10 @@
     <div class="analyze-wrap">
       <p class="hint" style="margin-bottom:12px;color:var(--muted);font-size:13px">
         Скачать видео с YouTube / Instagram / TikTok / X в макс. качестве (yt-dlp).
-        В чате: просто ссылка или <code>/download &lt;url&gt;</code> — то же, что в Telegram.
+        В чате: просто ссылка или <code>/download &lt;url&gt;</code> — то же, что в Telegram.<br>
+        <b>Разбор</b> — не здесь, а в чате: перетащи ролик в окно чата (или 📎) и спроси, что нужно.
+        Распознаю речь любой длины, посмотрю кадры и отвечу по содержанию. Файл на диске:
+        «разбери D:\видео\урок.mp4».
       </p>
       <div class="analyze-bar">
         <input id="videoURL" placeholder="https://youtube.com/watch?v=… или instagram.com/reel/…" style="flex:1;width:auto;min-width:280px;text-transform:none">
@@ -312,8 +343,12 @@ function setAttachment(file) {
   const chip = document.createElement("div");
   chip.className = "attach-chip";
   const thumb = isImg ? '<img id="attThumb" alt="">' : '<span style="font-size:20px">📄</span>';
+  const size = file.size >= 1048576
+    ? (file.size / 1048576).toFixed(1) + " МБ"
+    : Math.max(1, Math.round(file.size / 1024)) + " КБ";
+  const note = file.type.startsWith("video/") ? " · разбор займёт минуты" : "";
   chip.innerHTML = thumb + '<span class="name">' + file.name +
-    ' · ' + Math.max(1, Math.round(file.size / 1024)) + ' КБ</span><button class="rm" title="Убрать">✕</button>';
+    ' · ' + size + note + '</span><button class="rm" title="Убрать">✕</button>';
   attachBar.innerHTML = "";
   attachBar.appendChild(chip);
   attachBar.style.display = "block";
@@ -373,8 +408,18 @@ async function send() {
     let buf = "";
     const handleEv = (ev) => {
       if (ev.error) { bot.classList.add("err"); bot.textContent = "❌ " + ev.error; }
+      // Лента статусов агента (ТЗ §8): показываем шаги, но никогда не CoT.
+      else if (ev.status !== undefined && !ev.done) { showAgentStatus(ev.status); }
       else if (ev.done) {
+        clearAgentStatus();
         const finalText = ev.text || "";
+        if (ev.waiting) { renderConfirmButtons(); }
+        if (ev.transcript) {
+          const tr = document.createElement("div");
+          tr.className = "msg-meta";
+          tr.textContent = "🎙 Распознал: «" + ev.transcript + "»";
+          bot.parentNode ? bot.parentNode.insertBefore(tr, bot) : messages.insertBefore(tr, bot);
+        }
         bot.innerHTML = renderMd(finalText);
         if (ev.files && ev.files.length) appendFileLinks(messages, ev.files);
         if (ev.stats) {
@@ -416,13 +461,196 @@ sendBtn.onclick = send;
 input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
+
+/* ---------- статусы шагов агента, стоп, подтверждение, рубильник рук ---------- */
+let statusBox = null;
+function showAgentStatus(text) {
+  if (!text) return;
+  if (!statusBox) {
+    statusBox = document.createElement("div");
+    statusBox.className = "msg-meta";
+    messages.appendChild(statusBox);
+  }
+  statusBox.textContent = text;
+  messages.scrollTop = messages.scrollHeight;
+}
+function clearAgentStatus() {
+  if (statusBox && statusBox.parentNode) statusBox.parentNode.removeChild(statusBox);
+  statusBox = null;
+}
+
+// Подтверждение опасного действия: те же «да/нет», что и в Telegram, но кнопками.
+function renderConfirmButtons() {
+  const row = document.createElement("div");
+  row.className = "quick";
+  const mk = (label, approve, cls) => {
+    const b = document.createElement("button");
+    b.className = cls; b.textContent = label;
+    b.onclick = async () => {
+      row.remove();
+      const bot = bubble("bot", "…");
+      try {
+        const resp = await fetch("/api/confirm", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approve }),
+        });
+        await readNdjsonStream(resp, ev => {
+          if (ev.error) { bot.classList.add("err"); bot.textContent = "❌ " + ev.error; }
+          else if (ev.status !== undefined && !ev.done) showAgentStatus(ev.status);
+          else if (ev.done) {
+            clearAgentStatus();
+            bot.innerHTML = renderMd(ev.text || "");
+            if (ev.files && ev.files.length) appendFileLinks(messages, ev.files);
+          }
+          messages.scrollTop = messages.scrollHeight;
+        });
+      } catch (e) { bot.classList.add("err"); bot.textContent = "❌ " + e.message; }
+    };
+    return b;
+  };
+  row.appendChild(mk("✅ Да, выполнить", true, "primary"));
+  row.appendChild(mk("🚫 Нет", false, "ghost"));
+  messages.appendChild(row);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+$("stopBtn").onclick = async () => {
+  try {
+    const r = await fetch("/api/stop", { method: "POST" });
+    const j = await r.json();
+    bubble("bot", j.text || "⏹ Остановлено.");
+  } catch (e) { bubble("bot", "❌ " + e.message); }
+};
+
+// Сжатие контекста: то же, что /compact в Telegram.
+$("compactBtn").onclick = async () => {
+  const btn = $("compactBtn");
+  btn.disabled = true; btn.textContent = "🗜 Сжимаю…";
+  try {
+    const r = await fetch("/api/compact", { method: "POST" });
+    const j = await r.json();
+    bubble("bot", j.text || "").innerHTML = renderMd(j.text || "");
+    if (j.context) paintContext(j.context);
+  } catch (e) { bubble("bot", "❌ " + e.message); }
+  btn.disabled = false; btn.textContent = "🗜 Сжать";
+};
+
+const handsBtn = $("handsBtn");
+function paintHands(j) {
+  const full = !!j.full;
+  handsBtn.textContent = (full ? "🖐 руки: длинные" : "🛡 руки: короткие");
+  handsBtn.title = (j.label || "").replace(/\*\*/g, "").replace(/`/g, "");
+  handsBtn.style.borderColor = full ? "#c2704a" : "";
+}
+async function refreshHands() {
+  try { paintHands(await (await fetch("/api/hands")).json()); } catch (_) {}
+}
+handsBtn.onclick = async () => {
+  try {
+    const cur = handsBtn.textContent.includes("full");
+    const r = await fetch("/api/hands", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: cur ? "safe" : "full" }),
+    });
+    const j = await r.json();
+    paintHands(j);
+    bubble("bot", j.label || "");
+  } catch (e) { bubble("bot", "❌ " + e.message); }
+};
+refreshHands();
 function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
 input.addEventListener("input", autoGrow);
 $("reset").onclick = async () => {
-  await fetch("/api/reset", { method: "POST" });
+  const r = await fetch("/api/reset", { method: "POST" });
   messages.innerHTML = "";
   bubble("bot", "Контекст диалога очищен.");
+  // Счётчик перерисовываем сразу ответом сервера, а не ждём следующего опроса статуса:
+  // «сбросил, а внизу по-прежнему 2.2K» выглядит как несработавший сброс.
+  try { const j = await r.json(); if (j.context) paintContext(j.context); } catch (_) {}
 };
+
+/* ---------- голос (микрофон Web → STT → чат, паритет с Telegram voice) ---------- */
+const micBtn = $("micBtn");
+let mediaRec = null, mediaStream = null, micChunks = [], micStarting = false;
+function micSupported() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+function pickAudioMime() {
+  const cands = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  for (const m of cands) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";
+}
+async function startMic() {
+  if (!micSupported()) {
+    bubble("bot", "❌ Браузер не даёт доступ к микрофону (нужен getUserMedia + MediaRecorder).");
+    return;
+  }
+  if (mediaRec || micStarting || sendBtn.disabled) return;
+  micStarting = true;
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = pickAudioMime();
+    mediaRec = mime ? new MediaRecorder(mediaStream, { mimeType: mime }) : new MediaRecorder(mediaStream);
+    micChunks = [];
+    mediaRec.ondataavailable = (e) => { if (e.data && e.data.size) micChunks.push(e.data); };
+    mediaRec.start(200);
+    micBtn.classList.add("mic-on");
+    micBtn.title = "Запись… отпусти или кликни ещё раз, чтобы отправить";
+  } catch (e) {
+    bubble("bot", "❌ Нет доступа к микрофону: " + e.message);
+    stopMicStream();
+  }
+  micStarting = false;
+}
+function stopMicStream() {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach(t => t.stop());
+    mediaStream = null;
+  }
+  mediaRec = null;
+  micBtn.classList.remove("mic-on");
+  micBtn.title = "Голос: зажми, говори, отпусти — распознаю и отвечу (TypeWhisper / whisper)";
+}
+async function stopMicAndSend() {
+  if (!mediaRec) return;
+  const rec = mediaRec;
+  const mime = rec.mimeType || pickAudioMime() || "audio/webm";
+  const blob = await new Promise((resolve) => {
+    rec.onstop = () => resolve(new Blob(micChunks, { type: mime }));
+    try { rec.stop(); } catch (_) { resolve(new Blob(micChunks, { type: mime })); }
+  });
+  stopMicStream();
+  if (!blob || blob.size < 400) {
+    bubble("bot", "🎙 Слишком короткая запись — попробуй ещё раз.");
+    return;
+  }
+  const ext = mime.includes("ogg") ? "ogg" : mime.includes("mp4") ? "m4a" : "webm";
+  const file = new File([blob], "voice." + ext, { type: mime.split(";")[0] });
+  pendingFile = file;
+  const caption = input.value.trim();
+  input.value = "";
+  autoGrow();
+  // Reuse send() path: set attachment UI briefly then submit
+  setAttachment(file);
+  if (caption) input.value = caption;
+  await send();
+}
+// Hold-to-talk (pointer) + click toggle for trackpads
+micBtn.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  micBtn.setPointerCapture(e.pointerId);
+  startMic();
+});
+micBtn.addEventListener("pointerup", (e) => {
+  e.preventDefault();
+  if (mediaRec) stopMicAndSend();
+});
+micBtn.addEventListener("pointercancel", () => { if (mediaRec) { try { mediaRec.stop(); } catch (_) {} stopMicStream(); } });
+// Prevent context menu on long-press
+micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // appendFileLinks shows downloadable artifact links under a reply (videos, clones, …).
 function appendFileLinks(parent, files) {
@@ -481,10 +709,16 @@ async function runBrowser() {
     await readNdjsonStream(resp, ev => {
       if (ev.error) browserOut.textContent = "❌ " + ev.error;
       else if (ev.done) {
-        browserOut.innerHTML = renderMd(ev.text || "");
+        // plan[] — лента шагов от диспетчера (ТЗ §10 п. 25), summary уже первой строкой text.
+        let head = "";
+        if (ev.plan && ev.plan.length) {
+          head = "🧭 План:\n" + ev.plan.map((p, i) => (i + 1) + ". " + p).join("\n") + "\n\n";
+        }
+        browserOut.innerHTML = renderMd(head + (ev.text || ""));
         browserFiles.innerHTML = "";
         if (ev.files) appendFileLinks(browserFiles, ev.files);
-      } else if (ev.text) browserOut.textContent = ev.text;
+      } else if (ev.status) browserOut.textContent = ev.status;
+      else if (ev.text) browserOut.textContent = ev.text;
     });
   } catch (e) {
     browserOut.textContent = "❌ " + e.message;
@@ -620,10 +854,17 @@ function updateStateBar(a) {
   if (!a) return;
   const gen = a.phase === "generating";
   bar.classList.toggle("gen", gen);
-  $("stateLabel").textContent = gen ? "генерация: " + (a.label || "…") : "простаивает";
+  let label = gen ? "генерация: " + (a.label || "…") : "простаивает";
+  // Цикл инструментов идёт ходами, а не потоком: показываем номер хода, иначе индикатор
+  // выглядит замершим ровно там, где работы больше всего.
+  if (gen && a.turns > 0) label += " · ход " + a.turns;
+  $("stateLabel").textContent = label;
   if (gen && a.live_tok_per_sec != null) {
-    $("stateLive").innerHTML = "<b>" + a.live_tok_per_sec + "</b> ток/с · <b>" +
-      (a.live_tokens || 0) + "</b> ток · " + (a.elapsed_sec || 0) + " с";
+    // per_turn = цифры обновляются раз в ход модели, а не раз в токен. Подписано честно,
+    // потому что «замершая» цифра без объяснения читается как поломка.
+    $("stateLive").innerHTML = "<b>" + a.live_tok_per_sec + "</b> ток/с" +
+      (a.per_turn ? " (за ход)" : "") + " · <b>" + (a.live_tokens || 0) + "</b> ток · " +
+      (a.elapsed_sec || 0) + " с";
   } else {
     $("stateLive").textContent = gen ? "запуск…" : "";
   }
@@ -634,27 +875,63 @@ function updateStateBar(a) {
       "</b> ток/с промпт · " + L.gen_tokens + " ток за " + (L.total_ms / 1000).toFixed(1) + " с";
   }
 }
+
+// paintContext рисует окно контекста: занято/всего + полоса. Занятое — это prompt_n
+// последнего запроса, его считает llama.cpp; оценка по символам сюда не подмешивается.
+function paintContext(c) {
+  const meter = $("ctxMeter");
+  if (!c || !c.total) { $("ctxText").textContent = "контекст: —"; return; }
+  const used = c.used || 0;
+  const pct = c.pct != null ? c.pct : (used ? Math.round(used * 100 / c.total) : 0);
+  $("ctxFill").style.width = Math.min(100, pct) + "%";
+  meter.classList.toggle("warn", pct >= 60 && pct < 85);
+  meter.classList.toggle("hot", pct >= 85);
+  const k = n => n >= 1000 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : String(n);
+  $("ctxText").innerHTML = "контекст <b>" + k(used) + "</b> / " + k(c.total) + " · " + pct + "%";
+  meter.title = "Окно контекста модели: занято " + used + " из " + c.total + " токенов" +
+    (c.history_msgs ? "\nИстория чата: " + c.history_msgs + " реплик ≈ " + c.history_tokens +
+      " токенов (сжать: кнопка 🗜 или /compact)" : "") +
+    "\nАвтосжатие включается на " + (c.auto_compact_at || "?") + " репликах.";
+}
 async function refreshStatus() {
   try {
     const r = await fetch("/api/status");
     const s = await r.json();
     updateStateBar(s.activity);
+    paintContext(s.context);
     setChip("dotBrain", "chipBrain", s.brain_ready ? "ok" : "warn", s.brain_ready ? "мозг готов" : "мозг грузится");
     setChip("dotChrome", "chipChrome", s.chrome_tabs >= 0 ? "ok" : "bad",
       s.chrome_tabs >= 0 ? "Chrome: " + s.chrome_tabs + " вкл." : "Chrome недоступен");
+    const vLabel = s.voice_backend || "голос";
     setChip("dotWhisper", "chipWhisper",
       s.whisper === "ready" ? "ok" : s.whisper === "down" ? "bad" : "warn",
-      s.whisper === "ready" ? "голос готов" : s.whisper === "down" ? "whisper упал" : "голос выключен");
+      s.whisper === "ready" ? ("голос · " + vLabel) : s.whisper === "down" ? (vLabel + " недоступен") : "голос выключен");
     $("cards").innerHTML =
       card("🧠 Мозг (LLM)", s.brain_ready ? "Готов" : "Грузится…", (s.model || "модель не задана") + " · порт " + s.brain_port) +
       card("🌐 Chrome (CDP)", s.chrome_tabs >= 0 ? s.chrome_tabs + " вкладок" : "Недоступен",
            s.chrome_tabs >= 0 ? "порт 9222" : "запусти Chrome с --remote-debugging-port=9222") +
-      card("🎙 Голос (Whisper)", s.whisper === "ready" ? "Готов" : s.whisper === "down" ? "Не отвечает" : "Выключен",
-           s.whisper === "off" ? "заполни WHISPER_* в settings.ini" : "") +
+      card("🎙 Голос (STT)", s.whisper === "ready" ? ("Готов · " + (s.voice_backend || "")) : s.whisper === "down" ? "Не отвечает" : "Выключен",
+           s.whisper === "off"
+             ? "TypeWhisper API (порт 8978) или WHISPER_* в settings.ini"
+             : ("TypeWhisper: " + (s.typewhisper ? "ok" : "—") + " · whisper.cpp: " + (s.whisper_cpp ? "ok" : "—"))) +
       card("💬 Диалоги", s.chats + " чатов", "веб-чат: " + s.web_turns + " реплик") +
+      card("🪟 Контекст",
+           s.context && s.context.total
+             ? ((s.context.used || 0) + " / " + s.context.total + " ток."
+                + (s.context.pct != null ? " · " + s.context.pct + "%" : ""))
+             : "неизвестен",
+           s.context
+             ? ("история: " + (s.context.history_msgs || 0) + " реплик ≈ " +
+                (s.context.history_tokens || 0) + " ток. · автосжатие на " +
+                (s.context.auto_compact_at || "?") + " · /compact сжимает вручную")
+             : "модель ещё грузится") +
+      card("🖐 Руки", s.hands ? (s.hands.mode === "full" ? "Длинные" : "Короткие") : "—",
+           s.hands && s.hands.mode === "full"
+             ? "весь ПК без подтверждений; ядерное переспрашивается один раз"
+             : "опасное спрашивает подтверждение; ядерное запрещено") +
       card("⏱ Аптайм", fmtUptime(s.uptime_sec), "бот запущен и работает") +
       '<div class="hint">Интерфейс доступен только с этого компьютера (127.0.0.1). Телеграм-бот работает параллельно: ' +
-      "<code>/analyze BTC</code>, <code>/chart</code>, <code>/browser</code>.</div>";
+      "<code>/analyze BTC</code>, <code>/chart</code>, <code>/agent</code>, <code>/browser</code>.</div>";
   } catch (e) {
     setChip("dotBrain", "chipBrain", "bad", "бот не отвечает");
   }

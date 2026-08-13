@@ -5,6 +5,7 @@ package main
 // with it through Telegram. All other tooling was intentionally removed.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -21,6 +22,8 @@ import (
 )
 
 const systemPrompt = `Ты — Kibborg, продвинутый локальный ИИ-ассистент в Telegram (текст, картинки, код, анализ). Отвечай по-русски.
+
+Примечание: в обычном режиме (без tool-agent) у тебя нет живого интернета. Если пользователь в allowlist — движок сам переключает тебя на tool-agent с терминалом и поиском; не утверждай обратное вне того режима.
 
 ОФОРМЛЕНИЕ (строго в Markdown, НЕ пиши HTML-теги):
 - **жирный** — для заголовков секций и ключевых акцентов.
@@ -45,60 +48,38 @@ const systemPrompt = `Ты — Kibborg, продвинутый локальны�
 
 Если чего-то не знаешь или не уверен — честно скажи. Код всегда в блоках, чтобы копировался одним нажатием.`
 
-// chartSystemPrompt is the role used ONLY for /chart (and /analyze) image requests.
-// It turns the model into a strict "trade filter": its job is to REJECT weak setups,
-// not to invent a trade. Numbers must be read off the chart, never made up. The output
-// format is fixed — the model fills the template verbatim, no freeform prose.
-const chartSystemPrompt = `Ты — профессиональный трейдер и риск-менеджер с опытом на крипто- и фондовых рынках. Перед тобой скриншот графика (TradingView и т.п.).
+// chartVerdictRules is the trade-filter discipline for /chart. It used to be a vision system
+// prompt that read prices off the screenshot — which is exactly the failure §7 forbids: vision
+// misreads «BTC 118 024» by a digit and the whole plan runs on an invented number.
+//
+// So it moved here, into the TASK text of the /chart agent run: the same "reject weak setups"
+// filter and the same output template, but every number comes from analyze_ticker (Binance).
+const chartVerdictRules = `
+Ты не аналитик, который ищет сделку любой ценой, а ТОРГОВЫЙ ФИЛЬТР: отбраковывай плохие входы.
+Выбирай WAIT, если верно хотя бы одно: вероятность ниже 70%; стоп дальше 5% от входа;
+R:R хуже 1:2; структура неоднозначна; ключевые уровни неочевидны.
 
-Ты НЕ аналитик, который ищет сделку любой ценой, а ТОРГОВЫЙ ФИЛЬТР: твоя задача не искать сделки, а отбраковывать плохие.
+ВСЕ ЦЕНЫ бери из результата analyze_ticker (данные Binance). Ни одной цифры со скриншота.
 
-ПРАВИЛА ФИЛЬТРА — выбирай WAIT, если выполняется хотя бы одно:
-- вероятность успеха ниже 70%;
-- стоп-лосс дальше 5% от входа;
-- риск/прибыль хуже 1:2;
-- структура рынка неоднозначна;
-- ключевые уровни неочевидны.
-Запрещено выдавать торговый сигнал без достаточных оснований. Никогда не выдумывай числа, которых нет на графике — все цены бери прямо с картинки. Если инструмент, таймфрейм или цену не видно — напиши об этом и выбери WAIT.
-
-Сначала (про себя, НЕ выводя в ответ) пройди чек-лист: инструмент, таймфрейм, текущая цена, тренд старшей структуры, структура (HH/HL/LH/LL), уровни поддержки/сопротивления, зоны ликвидности, ложные пробои, импульсы и коррекции, вероятности продолжения / разворота / флэта.
-
-ФОРМАТ ОТВЕТА — выводи СТРОГО по шаблону ниже и НИЧЕГО лишнего: без вступлений, без нумерованных списков, без пояснений вне шаблона.
-
-Если вердикт WAIT — выводи РОВНО это:
+Формат ответа — строго по шаблону, без вступлений:
 
 ⚪ WAIT
-
 Причины:
-- <короткий пункт>
-- <короткий пункт>
+- <пункт>
+- <пункт>
 
-Если вердикт LONG или SHORT — выводи РОВНО это (🟢 для LONG, 🔴 для SHORT):
+либо (🟢 LONG / 🔴 SHORT):
 
 🟢 LONG
-
 Направление: LONG
 Вероятность: NN%
-Вход: <цена>
-DCA1: <цена>
-DCA2: <цена>
-SL: <цена>
-TP1: <цена>
-TP2: <цена>
-TP3: <цена>
+Вход / DCA1 / DCA2 / SL / TP1 / TP2 / TP3: <цены из analyze_ticker>
 R:R: 1:N
-
-Причины ЗА:
-- <пункт>
-- <пункт>
-
-Причины ПРОТИВ:
-- <пункт>
-- <пункт>
-
+Причины ЗА: - <пункт>
+Причины ПРОТИВ: - <пункт>
 Финальный вердикт: LONG
 
-Отвечай по-русски. Лучше честный WAIT, чем выдуманная сделка.`
+Лучше честный WAIT, чем выдуманная сделка.`
 
 // chartCommands (text) start the "send me a chart screenshot" flow.
 var chartCommands = []string{"/chart", "/график"}
@@ -161,6 +142,17 @@ func main() {
 	go ensureEmbed(cfg)
 	// Trade journal (SQLite) for /log, /journal, /close and /size sizing history.
 	initJournal()
+	// Agent safety state: the hands switch (runtime store, never settings.ini §6.4), the
+	// write/delete allowlist roots (§6.1), and any confirmation that died with the previous
+	// process — the honest answer to those is «задача потерялась», not a blind replay (§6.3).
+	loadHandsMode()
+	setHandsRoots(cfg.HandsRoots)
+	reportStalePending()
+	go expirePendingLoop(func(chatID int64, channel, text string) {
+		if channel == channelTelegram && cfg.TelegramToken != "" {
+			sendTelegramMessage("https://api.telegram.org/bot"+cfg.TelegramToken, chatID, text)
+		}
+	})
 	// Ctrl+C / SIGTERM: flush history, detach from Chrome, optionally stop the engines.
 	installShutdownHook(cfg)
 	// Local dashboard (chat + /analyze + stack status) on 127.0.0.1.
@@ -173,6 +165,8 @@ func startTelegramBot(cfg Config) {
 	botAPI := "https://api.telegram.org/bot" + cfg.TelegramToken
 	allow := parseAllow(cfg.TelegramID)
 	log.Printf("[TELEGRAM] polling started (allowlist: %v)", allow != nil)
+	// Кнопка «☰» со списком команд — регистрируется у Telegram один раз при старте.
+	go installTelegramMenu(botAPI)
 
 	offset := 0
 	for {
@@ -187,6 +181,13 @@ func startTelegramBot(cfg Config) {
 			if u.UpdateID >= offset {
 				offset = u.UpdateID + 1
 			}
+			// Нажатие кнопки панели. Обрабатывается ЗДЕСЬ, а не через очередь чата: половина
+			// кнопок («Стоп», переключение рук) обязана срабатывать посреди идущей задачи, а
+			// очередь по определению ждёт её конца.
+			if cb := u.CallbackQuery; cb != nil {
+				go handleCallbackQuery(cfg, botAPI, allow, cb)
+				continue
+			}
 			if u.Message == nil || u.Message.Chat.ID == 0 {
 				continue
 			}
@@ -196,10 +197,75 @@ func startTelegramBot(cfg Config) {
 				sendTelegramMessage(botAPI, msg.Chat.ID, "⛔ Доступ к этому боту ограничён.")
 				continue
 			}
+			// /stop and /hands are handled HERE, before the queue (§4.2, §9). The per-chat
+			// worker is strictly serial: while a task runs, anything enqueued executes AFTER
+			// it — so a queued /stop would arrive too late to stop anything.
+			if handledPreQueue(cfg, botAPI, allow, msg) {
+				continue
+			}
 			enqueueMessage(cfg, botAPI, allow, msg)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
+}
+
+// stopCommands / handsCommands are the two controls that must work WHILE a task is running.
+var (
+	stopCommands  = []string{"/stop", "/стоп", "/отмена", "/cancel"}
+	handsCommands = []string{"/hands", "/руки"}
+)
+
+// handledPreQueue processes the controls that cannot wait in the per-chat queue and reports
+// whether the message is fully handled.
+//
+// It runs OUTSIDE the normal handler, which is exactly why the permission check is repeated
+// here: forget it and any chat could stop the owner's tasks or flip the hands switch (§4.2).
+func handledPreQueue(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessage) bool {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return false
+	}
+	chatID := msg.Chat.ID
+	isStop, _ := parseCommand(text, stopCommands)
+	isHands, handsArg := parseCommand(text, handsCommands)
+	isMenu, _ := parseCommand(text, menuCommands)
+	if !isStop && !isHands && !isMenu {
+		return false
+	}
+	if !isOwnerChat(allow, chatID) {
+		// A foreign chat's /stop must not touch anyone's task (приёмка №24).
+		log.Printf("[TELEGRAM] pre-queue %q из чата %d вне allowlist — игнор", text, chatID)
+		sendTelegramMessage(botAPI, chatID, "⛔ Эта команда доступна только владельцу (TELEGRAM_ID).")
+		return true
+	}
+
+	// /menu — вне очереди: панель должна открываться и показывать состояние ИМЕННО тогда,
+	// когда что-то идёт не так, то есть посреди работающей задачи.
+	if isMenu {
+		sendTelegramMenu(botAPI, cfg, chatID)
+		return true
+	}
+
+	if isStop {
+		if taskID, ok := stopActiveTask(chatID); ok {
+			log.Printf("[TELEGRAM] /stop → задача %s остановлена", taskID)
+			sendTelegramMessage(botAPI, chatID, "⏹ Остановлено.")
+		} else {
+			sendTelegramMessage(botAPI, chatID, "Нечего останавливать — активной задачи нет.")
+		}
+		return true
+	}
+
+	// /hands — the runtime switch (§6.4); never settings.ini.
+	arg := strings.TrimSpace(handsArg)
+	if arg == "" {
+		// Без аргумента показываем панель: переключить кнопкой быстрее, чем вспоминать слово.
+		sendTelegramWithMarkup(botAPI, chatID, handsModeLabel(currentHandsMode()), menuKeyboard())
+		return true
+	}
+	mode := setHandsMode(arg, fmt.Sprintf("telegram:%d", chatID))
+	sendTelegramWithMarkup(botAPI, chatID, handsModeLabel(mode), menuKeyboard())
+	return true
 }
 
 // ==================== per-chat workers ====================
@@ -287,7 +353,10 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 	chatID := msg.Chat.ID
 	text := strings.TrimSpace(msg.Text)
 
-	// Image (screenshot/photo/image-file) → vision chat.
+	// --- Media auto-route (image → vision, voice → STT, file → text, video → hint) ---
+	// Plain text never attaches image_url, so vision is not used on text turns.
+
+	// Image (screenshot/photo/image-file) → vision chat only.
 	if fileID, ok := imageFileID(msg); ok {
 		if !brainReady(cfg.BrainPort) {
 			sendTelegramMessage(botAPI, chatID, "⏳ Модель ещё грузится. Пришли картинку чуть позже.")
@@ -307,56 +376,120 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 			chartReq = true
 			extra = strings.TrimSpace(pendExtra + " " + prompt)
 		}
-		sysPrompt := ""
-		if chartReq {
-			sysPrompt = chartSystemPrompt
-			prompt = "Проанализируй этот график по своим правилам и дай вердикт строго по шаблону."
-			if extra != "" {
-				prompt += "\nДополнительный контекст от пользователя: " + extra
-			}
-		} else if prompt == "" {
-			prompt = "Что на этом изображении? Опиши по делу."
-		}
 		stop := startTyping(botAPI, chatID)
 		defer stop() // safety net; explicit stop() below clears it before the reply is sent
-		reply := chatWithImage(cfg, chatID, prompt, fileID, sysPrompt)
+		if chartReq {
+			// §7: the screenshot goes through vision WITHOUT tools, and the numbers for the
+			// analysis come from Binance — never from what vision "read" on the chart.
+			desc, err := describeImage(cfg, chatID, chartVisionPrompt, fileID, chartVisionSystemPrompt)
+			if err != nil {
+				stop()
+				sendTelegramMessage(botAPI, chatID, "❌ "+err.Error())
+				return
+			}
+			stop()
+			handleChartAnalysis(cfg, botAPI, allow, chatID, extra, desc)
+			return
+		}
+		if prompt == "" {
+			// A bare picture: the description IS the answer, no routing needed.
+			reply := chatWithImage(cfg, chatID, "Что на этом изображении? Опиши по делу.", fileID, "")
+			stop()
+			sendTelegramMessage(botAPI, chatID, reply)
+			log.Printf("[TELEGRAM] replied to %d (image, %d chars)", chatID, len(reply))
+			return
+		}
+		// Caption + picture: describe first, then let the dispatcher route the TEXT (§4).
+		desc, err := describeImage(cfg, chatID, "Опиши это изображение по делу, без выдумок: что на нём и какие детали важны.", fileID, chartVisionSystemPrompt)
+		if err != nil {
+			stop()
+			sendTelegramMessage(botAPI, chatID, "❌ "+err.Error())
+			return
+		}
 		stop()
-		sendTelegramMessage(botAPI, chatID, reply)
-		log.Printf("[TELEGRAM] replied to %d (image, %d chars)", chatID, len(reply))
+		if allow == nil {
+			sendTelegramMessage(botAPI, chatID, desc)
+			recordHistory(chatID, "[изображение] "+prompt, desc)
+			return
+		}
+		runTelegramAgent(cfg, botAPI, allow, chatID,
+			prompt+"\n\n[Описание приложенной картинки, полученное зрением]\n"+desc)
 		return
 	}
 
-	// Voice / audio → Whisper transcription, then the normal chat pipeline.
+	// Voice / audio → Whisper transcription, then the normal text chat pipeline (no vision).
 	if v := firstAudio(msg); v != nil {
 		handleVoiceMessage(cfg, botAPI, chatID, v.FileID, v.Duration, v.MimeType)
 		return
 	}
 
-	// Document (code/text file) → read it and answer.
+	// Видео → ffmpeg разбирает его на речь и кадры, дальше это обычный ТЕКСТОВЫЙ запрос (§21).
+	if v := firstVideo(msg); v != nil {
+		handleTelegramVideo(cfg, botAPI, allow, chatID, v, strings.TrimSpace(msg.Caption))
+		return
+	}
+
+	// Document: classify by name+mime — image / audio / video / text / other.
 	if msg.Document != nil {
 		// Security tools work on ANY file (incl. binaries): /scan, /audit, /logs in the caption.
 		if mode, ok := parseSecFileCaption(msg.Caption); ok {
 			handleSecDocument(cfg, botAPI, chatID, msg.Document, mode)
 			return
 		}
-		if !isTextFile(msg.Document.FileName, msg.Document.MimeType) {
-			sendTelegramMessage(botAPI, chatID, "❌ Этот формат пока не читаю. Шлю текст и код: .go .py .md .txt .json .yaml .sql .sh и т.п. (и картинки).")
+		kind := classifyMedia(msg.Document.FileName, msg.Document.MimeType)
+		switch kind {
+		case mediaImage:
+			// Image sent as a file (not compress photo) — same vision path.
+			if !brainReady(cfg.BrainPort) {
+				sendTelegramMessage(botAPI, chatID, "⏳ Модель ещё грузится. Пришли картинку чуть позже.")
+				return
+			}
+			prompt := strings.TrimSpace(msg.Caption)
+			if prompt == "" {
+				prompt = "Что на этом изображении? Опиши по делу."
+			}
+			stop := startTyping(botAPI, chatID)
+			reply := chatWithImage(cfg, chatID, prompt, msg.Document.FileID, "")
+			stop()
+			sendTelegramMessage(botAPI, chatID, reply)
+			log.Printf("[TELEGRAM] replied to %d (image-doc %s, %d chars)", chatID, msg.Document.FileName, len(reply))
+			return
+		case mediaAudio:
+			handleVoiceMessage(cfg, botAPI, chatID, msg.Document.FileID, 0, msg.Document.MimeType)
+			return
+		case mediaVideo:
+			// Видео файлом — тот же разбор, что и видео сообщением.
+			handleTelegramVideo(cfg, botAPI, allow, chatID, &tgVideo{
+				FileID:   msg.Document.FileID,
+				MimeType: msg.Document.MimeType,
+				FileName: msg.Document.FileName,
+				FileSize: msg.Document.FileSize,
+			}, strings.TrimSpace(msg.Caption))
+			return
+		case mediaTextFile:
+			if !brainReady(cfg.BrainPort) {
+				sendTelegramMessage(botAPI, chatID, "⏳ Модель ещё грузится. Пришли файл чуть позже.")
+				return
+			}
+			prompt := strings.TrimSpace(msg.Caption)
+			if prompt == "" {
+				prompt = "Разбери этот файл: что он делает, есть ли проблемы и что можно улучшить."
+			}
+			stop := startTyping(botAPI, chatID)
+			reply := chatWithFile(cfg, chatID, prompt, msg.Document)
+			stop()
+			sendTelegramMessage(botAPI, chatID, reply)
+			log.Printf("[TELEGRAM] replied to %d (file %s, %d chars)", chatID, msg.Document.FileName, len(reply))
+			return
+		default:
+			sendTelegramMessage(botAPI, chatID,
+				"❌ Этот формат пока не читаю.\n"+
+					"• Картинки → зрение (png/jpg/webp…)\n"+
+					"• Голос → STT\n"+
+					"• Текст/код → .go .py .md .txt .json …\n"+
+					"• Видео по ссылке → /download")
 			return
 		}
-		if !brainReady(cfg.BrainPort) {
-			sendTelegramMessage(botAPI, chatID, "⏳ Модель ещё грузится. Пришли файл чуть позже.")
-			return
-		}
-		prompt := strings.TrimSpace(msg.Caption)
-		if prompt == "" {
-			prompt = "Разбери этот файл: что он делает, есть ли проблемы и что можно улучшить."
-		}
-		stop := startTyping(botAPI, chatID)
-		reply := chatWithFile(cfg, chatID, prompt, msg.Document)
-		stop()
-		sendTelegramMessage(botAPI, chatID, reply)
-		log.Printf("[TELEGRAM] replied to %d (file %s, %d chars)", chatID, msg.Document.FileName, len(reply))
-		return
 	}
 
 	if text == "" {
@@ -376,19 +509,32 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 	isLogs, logsArg := parseCommand(text, logsCommands)
 	isScan, scanArg := parseCommand(text, scanCommands)
 	isAudit, _ := parseCommand(text, auditCommands)
+	isCompact, _ := parseCommand(text, compactCommands)
 	switch {
 	case strings.HasPrefix(lower, "/start"), strings.HasPrefix(lower, "/help"):
-		sendTelegramMessage(botAPI, chatID,
+		sendTelegramWithMarkup(botAPI, chatID,
 			"Kibborg на связи. Просто пиши сообщение (или голосовое) — я отвечаю через локальную LLM.\n"+
+				"🎛 /menu — панель: руки, стоп, сжатие контекста, статус. Список команд — кнопка «☰» слева от поля ввода.\n"+
+				"🖥 Рабочий стол: «сделай скриншот экрана», «что у меня открыто», «открой блокнот и напиши…» — я вижу экран и управляю мышью и клавиатурой.\n"+
+				"🗜 /compact — сжать историю диалога в сводку, не теряя сути.\n"+
+				"🎙 Голос: TypeWhisper (HTTP API) → текст → ответ; fallback whisper.cpp. В Web — кнопка 🎙.\n"+
+				"🎬 Видео: пришли ролик (или ссылку) — распознаю речь, посмотрю кадры и отвечу по содержанию. "+
+				"С подписью «найди этот проект на гитхабе» — сразу и найду. Файл на диске: «разбери D:\\видео\\урок.mp4».\n"+
 				"📊 /analyze <тикер> — детерминированный разбор по данным Binance (режим, скор, тренды). Пример: /analyze BTC\n"+
 				"📈 /chart — торговый разбор графика: отправь команду, затем пришли скриншот или файл графика.\n"+
 				"📐 /size — размер позиции по риску. Пример: /size BTC entry=50000 stop=49000 tp=53000 risk=1.5 lev=10\n"+
 				"📝 /log — записать сделку в журнал · /journal — статистика и список · /close <id> <цена> — закрыть сделку\n"+
-				"🛡 /logs — анализ логов (по умолчанию свои: аномалии, всплески ошибок, утечки секретов) · /scan <текст> — поиск IOC и сигнатур атак · /audit — хеш+энтропия файла (пришли документом с подписью)\n"+
-				"🌐 /browser <задача> — управлять открытым Chrome: собрать данные из DOM/сети, заполнить форму, клонировать сайт. Нужен Chrome с --remote-debugging-port=9222.\n"+
+				"🛡 /logs — анализ логов (по умолчанию свои: аномалии, всплески ошибок, утечки секретов; журналы агента — `/logs runtime/hands.jsonl` и `/logs runtime/tasks.jsonl`) · /scan <текст> — поиск IOC и сигнатур атак · /audit — хеш+энтропия файла (пришли документом с подписью)\n"+
+				"🌐 /browser <задача> или /agent <задача> — полный агент: терминал, файлы, поиск в интернете, Chrome, Agent Reach.\n"+
+				"   В обычном чате тоже: «найди…», «запусти…», «прочитай файл…» — сам выберет инструменты (нужен TELEGRAM_ID).\n"+
+				"⏹ /stop — остановить текущую задачу (работает сразу, даже посреди команды).\n"+
+				"🖐 /hands — длина рук: `safe` (короткие: опасное спрашивает) ↔ `full` (длинные: весь ПК без вопросов). "+
+				"Недостижимого нет: даже ядерные команды в длинных руках не запрещены, а переспрашиваются один раз.\n"+
+				"   На опасный шаг отвечай **да** / **нет** — подтверждение не блокирует бота.\n"+
 				"🎬 /download <url> — скачать видео (YouTube, Instagram, TikTok…) в макс. качестве. Можно просто прислать ссылку.\n"+
 				"🧠 Я помню прошлые диалоги (долговременная память) и подмешиваю нужное в ответ.\n"+
-				"/reset — очистить контекст диалога и долговременную память.")
+				"/reset — очистить контекст диалога и долговременную память.",
+			menuKeyboard())
 		return
 	case isDownload || browser.IsVideoURL(text) || (browser.ExtractVideoURL(text) != "" && looksLikeDownloadRequest(text)):
 		url := downloadURL
@@ -442,30 +588,29 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 		}
 		return
 	case isBrowser:
-		// The browser agent drives the user's REAL logged-in Chrome (clicks, forms, cookies,
-		// downloads) — with an open bot that's remote control for strangers. Require the
-		// allowlist explicitly.
+		// Full agent: terminal + files + web + Chrome. Remote control of the user's machine —
+		// require TELEGRAM_ID allowlist.
 		if allow == nil {
 			sendTelegramMessage(botAPI, chatID,
-				"🔒 /browser отключён, пока не задан TELEGRAM_ID в settings.ini: браузер-агент управляет твоим реальным Chrome, и открытый доступ к нему опасен. Впиши свой chat id и перезапусти бота.")
+				"🔒 /browser и /agent отключены, пока не задан TELEGRAM_ID в settings.ini: агент управляет терминалом и Chrome на твоём ПК. Впиши свой chat id и перезапусти бота.")
 			return
 		}
 		if !brainReady(cfg.BrainPort) {
-			sendTelegramMessage(botAPI, chatID, "⏳ Модель ещё грузится. Повтори запрос к браузеру чуть позже.")
+			sendTelegramMessage(botAPI, chatID, "⏳ Модель ещё грузится. Повтори запрос чуть позже.")
 			return
 		}
 		if browserTask == "" {
 			sendTelegramMessage(botAPI, chatID,
-				"🌐 Напиши задачу: /browser <что сделать>.\nПример: /browser собери таблицу с открытой страницы в CSV.\n(Chrome должен быть запущен с --remote-debugging-port=9222, нужная вкладка открыта.)")
+				"🌐 Напиши задачу: /agent <что сделать> (или /browser).\n"+
+					"Примеры:\n"+
+					"• /agent найди свежие статьи про Rust async\n"+
+					"• /agent покажи файлы в D:\\projects\n"+
+					"• /agent собери таблицу с открытой вкладки Chrome\n"+
+					"Терминал, файлы, интернет и Chrome — в одном агенте.")
 			return
 		}
-		stop := startTyping(botAPI, chatID)
-		defer stop() // safety net; explicit stop() below clears it before the reply is sent
-		reply, artifacts := runBrowserAgent(cfg, browserTask)
-		stop()
-		sendTelegramMessage(botAPI, chatID, reply)
-		sendArtifacts(botAPI, chatID, artifacts)
-		log.Printf("[BROWSER] replied to %d (%d chars, %d artifacts)", chatID, len(reply), len(artifacts))
+		// A slash command is a HINT to the dispatcher, not a bypass of it (§7).
+		runTelegramAgent(cfg, botAPI, allow, chatID, browserTask)
 		return
 	case isSize:
 		sendTelegramMessage(botAPI, chatID, handleSizeCommand(cfg, sizeArg))
@@ -508,13 +653,15 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 			"📈 Пришлите скриншот или файл графика — проанализирую и дам торговый разбор (направление, вход, усреднения, стоп, тейки).")
 		return
 	case strings.HasPrefix(lower, "/reset"):
-		histMu.Lock()
-		delete(history, chatID)
-		markHistoryDirty()
-		histMu.Unlock()
-		takeChartPending(chatID)
-		forgetMemory(chatID)
-		sendTelegramMessage(botAPI, chatID, "Контекст диалога и долговременная память очищены.")
+		resetChatContext(chatID)
+		sendTelegramMessage(botAPI, chatID, "♻️ Контекст диалога и долговременная память очищены.")
+		return
+	case isCompact:
+		// Сжатие — это вызов модели, поэтому команда идёт через очередь чата, а не мимо неё.
+		stop := startTyping(botAPI, chatID)
+		reply := handleCompactCommand(cfg, chatID)
+		stop()
+		sendTelegramMessage(botAPI, chatID, reply)
 		return
 	}
 
@@ -524,10 +671,146 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 		return
 	}
 
-	// Plain text turn: the answer streams into a live-updating message (see stream.go).
+	// A reply to a pending confirmation goes first: "да"/"нет" resumes the parked task
+	// instead of starting a new one (§6.3 п. 8). The worker is free by now — the paused task
+	// released browserTaskMu — so this path can safely go through the queue.
+	if p := peekPending(chatID); p != nil {
+		if yes, ok := confirmWord(text); ok {
+			if !isOwnerChat(allow, chatID) {
+				sendTelegramMessage(botAPI, chatID, "⛔ Подтверждать действия может только владелец.")
+				return
+			}
+			answerTelegramConfirmation(cfg, botAPI, chatID, yes)
+			return
+		}
+	}
+
+	// Allowlisted chats: ALWAYS the layered agent (dispatcher → packs → guarded tools).
+	// Plain streaming has no tools — that was why the model invented news and claimed
+	// "no console". Without TELEGRAM_ID — streaming only (no remote shell for strangers).
+	if allow != nil && wantsToolAgent(text) {
+		runTelegramAgent(cfg, botAPI, allow, chatID, text)
+		return
+	}
+
+	// Open / non-allowlisted: stream without tools.
 	stop := startTyping(botAPI, chatID)
+	defer stop()
 	chatWithHistoryStream(cfg, botAPI, chatID, text, stop)
 	stop()
+}
+
+// runTelegramAgent is the single Telegram entry into the layered agent: statuses go out as
+// they happen, the final answer carries the dispatcher's summary, and only a COMPLETED task
+// is written to long-term memory (§4.1 — interrupted attempts must not surface in recall).
+func runTelegramAgent(cfg Config, botAPI string, allow map[int64]bool, chatID int64, text string) {
+	stop := startTyping(botAPI, chatID)
+	defer stop()
+
+	actor := actorFor(channelTelegram, chatID, isOwnerChat(allow, chatID))
+	task := readFollowUpHint(chatID, text)
+	base := withMemory(cfg, chatID, text, baseMessages(chatID))
+
+	res := runAgent(cfg, actor, base, task, telegramStatus(botAPI, chatID))
+	stop()
+	deliverAgentResult(botAPI, chatID, text, res)
+	// Окно диалога подошло к пределу — пересказываем старое в сводку вместо того, чтобы молча
+	// его выбросить. В фоне: пользователь уже получил ответ и ждать сжатия не должен.
+	maybeAutoCompact(cfg, chatID, func(note string) { sendTelegramMessage(botAPI, chatID, note) })
+}
+
+// handleChartAnalysis is the /chart tail: a vision DESCRIPTION plus a ticker, analysed by the
+// trade pack over live Binance candles (§7, приёмка №33). If the ticker cannot be resolved we
+// ask — a wrong guess here poisons every number downstream.
+func handleChartAnalysis(cfg Config, botAPI string, allow map[int64]bool, chatID int64, extra, desc string) {
+	symbol := extractChartTicker(extra, desc)
+	if symbol == "" {
+		sendTelegramMessage(botAPI, chatID,
+			"📈 Разобрал картинку, но тикер по ней не определился:\n\n"+capAgentText(desc, 1200)+
+				"\n\n❓ Назови инструмент (например `BTC` или `ETHUSDT`) — возьму данные с биржи и сделаю разбор. "+
+				"Цифры со скриншота я как данные не использую.")
+		setChartPending(chatID, strings.TrimSpace(extra+"\n"+desc))
+		return
+	}
+	if allow == nil {
+		// No allowlist → no agent. Still give the deterministic report, it needs no hands.
+		report, err := analyzeTicker(symbol)
+		if err != nil {
+			sendTelegramMessage(botAPI, chatID, "❌ "+err.Error())
+			return
+		}
+		sendTelegramMessage(botAPI, chatID, renderReport(report)+sizingBlock(cfg, report))
+		return
+	}
+	task := chartTaskText(symbol, extra, desc)
+	stop := startTyping(botAPI, chatID)
+	defer stop()
+	actor := actorFor(channelTelegram, chatID, isOwnerChat(allow, chatID))
+	base := withMemory(cfg, chatID, task, baseMessages(chatID))
+	res := runLayeredAgent(agentRequest{
+		cfg: cfg, actor: actor, baseMsgs: base, input: task,
+		status:     telegramStatus(botAPI, chatID),
+		memSummary: memorySummaryFor(chatID),
+		hintPacks:  []string{packTrade},
+	})
+	stop()
+	deliverAgentResult(botAPI, chatID, "[график] "+symbol, res)
+}
+
+// chartTaskText builds the /chart task: analyse the resolved ticker with live data, using the
+// screenshot only as STRUCTURE, and answer through the trade filter (§7).
+func chartTaskText(symbol, extra, desc string) string {
+	task := "Разбери " + symbol + ": вызови analyze_ticker и дай торговый вывод.\n" +
+		chartVerdictRules +
+		"\n\n[Описание графика со скриншота — только структура, числа отсюда НЕ бери]\n" +
+		capAgentText(desc, 1200)
+	if strings.TrimSpace(extra) != "" {
+		task += "\n\nКонтекст от пользователя: " + strings.TrimSpace(extra)
+	}
+	return task
+}
+
+// telegramStatus throttles step statuses so a long task does not spam the chat.
+func telegramStatus(botAPI string, chatID int64) func(string) {
+	var last string
+	var lastAt time.Time
+	return func(s string) {
+		if s == "" || s == last || time.Since(lastAt) < 2*time.Second {
+			return
+		}
+		last, lastAt = s, time.Now()
+		sendTelegramMessage(botAPI, chatID, s)
+	}
+}
+
+// deliverAgentResult sends notices, the answer and the artifacts, then records history.
+func deliverAgentResult(botAPI string, chatID int64, userText string, res agentResult) {
+	for _, n := range res.Notices {
+		sendTelegramMessage(botAPI, chatID, n)
+	}
+	if strings.TrimSpace(res.Text) != "" {
+		sendTelegramMessage(botAPI, chatID, res.Text)
+	}
+	sendArtifacts(botAPI, chatID, res.Artifacts)
+	if !res.interrupted() {
+		recordHistory(chatID, userText, res.Text)
+	}
+	log.Printf("[AGENT] %s → %d (%s, %d chars, %d artifacts)",
+		res.TaskID, chatID, res.Status, len(res.Text), len(res.Artifacts))
+}
+
+// answerTelegramConfirmation resumes (or refuses) the parked task.
+func answerTelegramConfirmation(cfg Config, botAPI string, chatID int64, approved bool) {
+	rs := takePending(chatID)
+	if rs == nil {
+		sendTelegramMessage(botAPI, chatID, "Нечего подтверждать — вопрос уже снят.")
+		return
+	}
+	stop := startTyping(botAPI, chatID)
+	defer stop()
+	res := resumeConfirmed(rs, approved, telegramStatus(botAPI, chatID))
+	stop()
+	deliverAgentResult(botAPI, chatID, rs.task.Input, res)
 }
 
 // parseCommand reports whether text opens with one of cmds and returns the rest of the line.
@@ -566,8 +849,8 @@ func parseChartCommand(caption string) (bool, string) {
 	return parseCommand(caption, analyzeCommands)
 }
 
-// browserCommands open the Browser Agent: the rest of the line is the natural-language task.
-var browserCommands = []string{"/browser", "/браузер", "/web"}
+// browserCommands open the full tool Agent (terminal + web + Chrome). Aliases kept for habit.
+var browserCommands = []string{"/browser", "/браузер", "/web", "/agent", "/агент", "/tools"}
 
 // downloadCommands fetch a video URL at best quality (shared with the web UI).
 var downloadCommands = []string{"/download", "/скачать", "/dl", "/video"}
@@ -595,7 +878,11 @@ func handleVideoDownload(cfg Config, botAPI string, chatID int64, url string) {
 	stop := startTyping(botAPI, chatID)
 	defer stop()
 	sendTelegramMessage(botAPI, chatID, "🎬 Скачиваю видео в максимальном доступном качестве…")
-	res, err := browser.FetchVideo(url, cfg.FfmpegPath)
+	// Direct /download bypasses the agent loop, so give it its own task-shaped budget: the
+	// same TaskTimeout ceiling applies, and yt-dlp dies with it (§4.2).
+	ctx, cancel := context.WithTimeout(context.Background(), TaskTimeout)
+	defer cancel()
+	res, err := browser.FetchVideo(ctx, url, cfg.FfmpegPath)
 	if err != nil {
 		sendTelegramMessage(botAPI, chatID, "❌ Не удалось скачать видео:\n"+err.Error())
 		return
@@ -679,6 +966,7 @@ type tgDocument struct {
 	FileID   string `json:"file_id"`
 	MimeType string `json:"mime_type"`
 	FileName string `json:"file_name"`
+	FileSize int64  `json:"file_size"`
 }
 
 type tgVoice struct {
@@ -687,21 +975,48 @@ type tgVoice struct {
 	MimeType string `json:"mime_type"`
 }
 
+// tgVideo покрывает video, video_note (кружок) и animation (гифка) — для разбора это один
+// и тот же контейнер, разница только в том, как Telegram его показывает.
+type tgVideo struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration"`
+	MimeType string `json:"mime_type"`
+	FileName string `json:"file_name"`
+	FileSize int64  `json:"file_size"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+}
+
 type tgMessage struct {
-	Text    string        `json:"text"`
-	Caption string        `json:"caption"`
-	Photo   []tgPhotoSize `json:"photo"`
-	Chat    struct {
+	MessageID int           `json:"message_id"`
+	Text      string        `json:"text"`
+	Caption   string        `json:"caption"`
+	Photo     []tgPhotoSize `json:"photo"`
+	Chat      struct {
 		ID int64 `json:"id"`
 	} `json:"chat"`
-	Document *tgDocument `json:"document"`
-	Voice    *tgVoice    `json:"voice"`
-	Audio    *tgVoice    `json:"audio"`
+	Document  *tgDocument `json:"document"`
+	Voice     *tgVoice    `json:"voice"`
+	Audio     *tgVoice    `json:"audio"`
+	Video     *tgVideo    `json:"video"`
+	VideoNote *tgVideo    `json:"video_note"`
+	Animation *tgVideo    `json:"animation"`
+}
+
+// tgCallbackQuery is a press on an inline-keyboard button (the /menu panel).
+type tgCallbackQuery struct {
+	ID   string `json:"id"`
+	Data string `json:"data"`
+	From struct {
+		ID int64 `json:"id"`
+	} `json:"from"`
+	Message *tgMessage `json:"message"`
 }
 
 type tgUpdate struct {
-	UpdateID int        `json:"update_id"`
-	Message  *tgMessage `json:"message"`
+	UpdateID      int              `json:"update_id"`
+	Message       *tgMessage       `json:"message"`
+	CallbackQuery *tgCallbackQuery `json:"callback_query"`
 }
 
 // firstAudio returns the message's voice note or audio file, if any.
@@ -712,8 +1027,21 @@ func firstAudio(m *tgMessage) *tgVoice {
 	return m.Audio
 }
 
+// firstVideo returns the message's video, video note (circle) or animation, if any.
+func firstVideo(m *tgMessage) *tgVideo {
+	switch {
+	case m.Video != nil:
+		return m.Video
+	case m.VideoNote != nil:
+		return m.VideoNote
+	case m.Animation != nil:
+		return m.Animation
+	}
+	return nil
+}
+
 // imageFileID returns the Telegram file_id of an image in the message (largest photo
-// size, or an image document), plus true if the message carries an image.
+// size, or an image document by mime/extension), plus true if the message carries an image.
 func imageFileID(m *tgMessage) (string, bool) {
 	if len(m.Photo) > 0 {
 		best := m.Photo[0]
@@ -724,7 +1052,8 @@ func imageFileID(m *tgMessage) (string, bool) {
 		}
 		return best.FileID, true
 	}
-	if m.Document != nil && strings.HasPrefix(m.Document.MimeType, "image/") {
+	// Image-as-file: mime image/* OR extension .png/.jpg/… (Telegram often mangles mime).
+	if m.Document != nil && classifyMedia(m.Document.FileName, m.Document.MimeType) == mediaImage {
 		return m.Document.FileID, true
 	}
 	return "", false
