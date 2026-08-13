@@ -82,6 +82,7 @@ Kibborg — это не «ещё один чат с нейросетью». Эт
 | Настоящий рабочий стол Windows | скрин экрана, окна, мышь, клавиатура, процессы, буфер |
 | Файлы и терминал | читать/писать/удалять, PowerShell |
 | Видео любой длины | пришлите ролик или ссылку — речь в текст, кадры в описание |
+| PDF и сканы | пришлите `.pdf` или «прочитай D:\акт.pdf» — текстовый слой, иначе OCR |
 | Скачать ролик | ссылка YouTube / Instagram / TikTok / X или `/download` |
 | Журнал сделок | `/log`, `/journal`, `/close`, `/size` |
 | Разбор логов и IOC | `/logs`, `/scan`, `/audit` |
@@ -247,6 +248,8 @@ Task { taskID, канал, 10 минут на задачу }
 |---|---|---|
 | **Google Chrome** | живой браузер агента | [google.com/chrome](https://www.google.com/chrome/) |
 | **FFmpeg + ffprobe** | голос, разбор и склейка видео | `winget install Gyan.FFmpeg` |
+| **Poppler** | текстовый слой PDF (`pdftotext` / `pdftoppm`) | `winget install oschwartz10612.Poppler` |
+| **Tesseract OCR** | распознавание сканов (rus+eng) | `winget install UB-Mannheim.TesseractOCR` |
 | **yt-dlp** | скачивание YouTube / Instagram / TikTok | `pip install -U yt-dlp` |
 | **Python 3.11+** | `huggingface-cli`, `yt-dlp`, опциональный Agent Reach | [python.org](https://www.python.org/downloads/) |
 | **TypeWhisper** | быстрый голос (рекомендуется) | [TypeWhisper для Windows](https://github.com/TypeWhisper/typewhisper-win) |
@@ -549,7 +552,30 @@ Invoke-RestMethod http://127.0.0.1:8978/v1/status
 
 Подробности — `engine-go/TYPEWHISPER.md`.
 
-### 5. Python + Agent Reach (по желанию)
+### 5. Poppler + Tesseract — PDF и сканы
+
+Без них агент не прочитает PDF: ни текстовый слой, ни скан.
+
+```powershell
+winget install oschwartz10612.Poppler
+winget install UB-Mannheim.TesseractOCR
+```
+
+Порядок разбора: текстовый слой (`pdftotext`) → OCR страницы (`tesseract`) → зрение только там, где OCR вернул пустоту.
+
+Русский пакет Tesseract из коробки часто отсутствует. Без него на русском скане будет латинская каша вместо кириллицы. Положите `rus.traineddata` в `engine-go\runtime\tessdata\` (качается с [tesseract-ocr/tessdata](https://github.com/tesseract-ocr/tessdata)).
+
+В `settings.ini` пути обычно пустые — ищутся сами:
+
+```ini
+POPPLER_DIR=
+TESSERACT=
+TESSDATA_DIR=
+```
+
+Большой справочник целиком не пересказывается: агент ищет по нему (`find=`) и читает нужные страницы.
+
+### 6. Python + Agent Reach (по желанию)
 
 Встроенный поиск (`web_search`, `read_url`, `semantic_search`, `youtube_transcript`) **Python не требует**.
 
@@ -562,7 +588,7 @@ agent_reach_doctor
 
 После этого в паке `web` появляются `agent_reach*` и `run_command` через upstream CLI.
 
-### 6. Telegram-бот
+### 7. Telegram-бот
 
 1. Откройте [@BotFather](https://t.me/BotFather).
 2. `/newbot` → имя → username (должен кончаться на `bot`).
@@ -624,6 +650,9 @@ agent_reach_doctor
 | `WHISPER_SERVER` / `WHISPER_MODEL` | запасной whisper.cpp |
 | `PORT_WHISPER` | `8081` |
 | `FFMPEG` | пусто = искать в PATH |
+| `POPPLER_DIR` | каталог `pdftotext` / `pdftoppm`; пусто = PATH |
+| `TESSERACT` | путь к `tesseract.exe`; пусто = PATH |
+| `TESSDATA_DIR` | языки OCR; пусто = `runtime/tessdata` |
 
 ### Память и трейдер
 
@@ -795,6 +824,8 @@ Kibborg_AI_Assistant/
     ├── guard.go              ← ворота
     ├── system_tools.go       ← рабочий стол Windows
     ├── video*.go             ← слой видео
+    ├── document.go           ← PDF: текстовый слой / OCR / зрение
+    ├── summarize.go          ← свёртка длинного текста
     ├── trading/              ← детерминированный рынок
     ├── browser/              ← Chrome CDP
     ├── journal/ memory/ secops/

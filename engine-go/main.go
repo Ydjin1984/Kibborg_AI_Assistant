@@ -457,6 +457,10 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 		case mediaAudio:
 			handleVoiceMessage(cfg, botAPI, chatID, msg.Document.FileID, 0, msg.Document.MimeType)
 			return
+		case mediaPDF:
+			// PDF → текстовый слой или распознавание скана → дальше обычный текст (§23).
+			handleTelegramPDF(cfg, botAPI, allow, chatID, msg.Document, strings.TrimSpace(msg.Caption))
+			return
 		case mediaVideo:
 			// Видео файлом — тот же разбор, что и видео сообщением.
 			handleTelegramVideo(cfg, botAPI, allow, chatID, &tgVideo{

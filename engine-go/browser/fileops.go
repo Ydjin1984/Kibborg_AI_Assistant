@@ -35,6 +35,12 @@ func ReadLocalFile(path string, maxBytes int) (string, error) {
 	if st.IsDir() {
 		return "", fmt.Errorf("это каталог, не файл — используй list_dir: %s", path)
 	}
+	// PDF технически читается, но внутри сжатые потоки, а не текст. Без этой ветки модель
+	// получала двоичный мусор и пересказывала его как содержание документа.
+	if strings.EqualFold(filepath.Ext(path), ".pdf") {
+		return "", fmt.Errorf("это PDF — текста напрямую в нём нет, внутри сжатые потоки. "+
+			"Используй read_document(path=%q): он возьмёт текстовый слой, а если внутри скан — распознает страницы", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err

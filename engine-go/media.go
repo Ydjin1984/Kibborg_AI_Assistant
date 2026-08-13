@@ -18,6 +18,7 @@ const (
 	mediaAudio                     // voice note / music → STT → text chat
 	mediaVideo                     // mp4 / mov / … — not vision, not STT here
 	mediaTextFile                  // code / markdown / json → embed as text
+	mediaPDF                       // pdf → текстовый слой или распознавание скана (§23)
 	mediaOther                     // unknown binary
 )
 
@@ -33,6 +34,8 @@ func (k MediaKind) String() string {
 		return "video"
 	case mediaTextFile:
 		return "textfile"
+	case mediaPDF:
+		return "pdf"
 	default:
 		return "other"
 	}
@@ -44,6 +47,11 @@ func (k MediaKind) String() string {
 func classifyMedia(name, mime string) MediaKind {
 	m := strings.ToLower(strings.TrimSpace(mime))
 	ext := strings.ToLower(filepath.Ext(name))
+
+	// PDF раньше всех: mime у него однозначный, а расширение бывает единственной подсказкой.
+	if m == "application/pdf" || m == "application/x-pdf" || ext == ".pdf" {
+		return mediaPDF
+	}
 
 	// Explicit mime first — most reliable for browser uploads.
 	switch {

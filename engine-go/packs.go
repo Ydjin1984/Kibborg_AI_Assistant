@@ -121,7 +121,9 @@ func packSpecs(sess *browser.Session, pack string) []browser.ToolSpec {
 	case packConsole:
 		return sess.ToolsConsole()
 	case packFiles:
-		return sess.ToolsFiles()
+		// Вторая половина пака живёт в package main: чтение PDF требует poppler, tesseract,
+		// зрения и модели — всего того, чего в пакете browser нет.
+		return append(sess.ToolsFiles(), docToolSpecs()...)
 	case packMedia:
 		// Пак собирается из двух половин: скачивание и субтитры живут в browser (там yt-dlp),
 		// разбор — в package main (ему нужны ffmpeg, распознавание речи, зрение и модель).

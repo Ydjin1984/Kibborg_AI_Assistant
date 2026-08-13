@@ -319,6 +319,10 @@ func handleAPIChat(w http.ResponseWriter, r *http.Request, cfg Config) {
 					data, _ := io.ReadAll(io.LimitReader(file, 20_000_000))
 					handleWebImageTurn(w, cfg, caption, hdr.Filename, mime, data)
 					return
+				case mediaPDF:
+					// PDF: текстовый слой или распознавание скана → текст → диспетчер (§23).
+					handleWebPDFTurn(w, cfg, caption, hdr.Filename, file)
+					return
 				case mediaVideo:
 					// Видео разбирается тем же слоем, что и в Telegram: речь+кадры → текст →
 					// диспетчер. Файл стримится на диск, а не читается в память: ролик может

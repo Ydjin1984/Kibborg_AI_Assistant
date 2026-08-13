@@ -90,7 +90,7 @@ func TestPackContents(t *testing.T) {
 		packBrowserRead: {"list_tabs", "open_url", "get_text", "extract_table", "capture_screenshot"},
 		packBrowserAct:  {"click_element", "type_text", "submit_form", "upload_file", "drag_element", "close_page"},
 		packConsole:     {"run_command"},
-		packFiles:       {"read_file", "write_file", "list_dir", "file_info", "mkdir", "delete_path"},
+		packFiles:       {"read_file", "write_file", "list_dir", "file_info", "mkdir", "delete_path", "read_document"},
 		packMedia: {"download_video", "youtube_transcript", "analyze_video", "transcribe_media",
 			"video_frames", "media_info", "convert_media"},
 		packTrade:  {"analyze_ticker", "size_position", "journal_add", "journal_stats"},

@@ -25,7 +25,7 @@ var localToolNames = map[string]bool{
 	"analyze_ticker": true, "size_position": true, "journal_add": true, "journal_stats": true,
 	"analyze_log": true, "scan_text": true, "audit_file": true,
 	"analyze_video": true, "transcribe_media": true, "video_frames": true,
-	"media_info": true, "convert_media": true,
+	"media_info": true, "convert_media": true, "read_document": true,
 	"request_pack": true,
 }
 
@@ -92,6 +92,9 @@ func dispatchLocalTool(t *Task, cfg Config, name, toolCallID string, args map[st
 		return res, true
 	}
 	if res, ok := dispatchVideoTool(t, cfg, name, args); ok {
+		return res, true
+	}
+	if res, ok := dispatchDocumentTool(t, cfg, name, args); ok {
 		return res, true
 	}
 	switch name {

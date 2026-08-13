@@ -12,6 +12,7 @@ package main
 // расшифровка ложится файлом рядом — за деталями модель сходит read_file'ом.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -182,7 +183,8 @@ func probeMedia(ctx context.Context, cfg Config, path string) (mediaInfo, error)
 		info.Bytes = st.Size()
 	}
 
-	out, err := runTool(ctx, ffprobeExe(cfg), 2*time.Minute,
+	// Только stdout: предупреждение ffprobe в stderr сломало бы разбор JSON.
+	out, err := runToolOut(ctx, ffprobeExe(cfg), 2*time.Minute,
 		"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path)
 	if err != nil {
 		return info, fmt.Errorf("ffprobe не прочитал файл: %v", err)
@@ -275,6 +277,32 @@ func runTool(parent context.Context, bin string, timeout time.Duration, args ...
 		return "", fmt.Errorf("%s: %v (%s)", filepath.Base(bin), err, capLogTail(string(out)))
 	}
 	return string(out), nil
+}
+
+// runToolOut выполняет бинарь и возвращает ТОЛЬКО stdout, а stderr оставляет для сообщения об
+// ошибке. Это принципиально там, где вывод — ДАННЫЕ: pdftotext на повреждённом файле пишет в
+// stderr «Syntax Error: …», и склейка потоков молча вставляла эти строки в текст документа,
+// откуда они уходили в выжимку как его содержание. Поймано на первом же битом PDF.
+func runToolOut(parent context.Context, bin string, timeout time.Duration, args ...string) (string, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if parent.Err() != nil {
+			return "", parent.Err()
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("%s: таймаут %s", filepath.Base(bin), timeout)
+		}
+		return "", fmt.Errorf("%s: %v (%s)", filepath.Base(bin), err, capLogTail(stderr.String()))
+	}
+	return stdout.String(), nil
 }
 
 // runFFmpeg вызывает ffmpeg с общими флагами. -nostdin обязателен: без него ffmpeg,
@@ -728,74 +756,8 @@ func autoFrameCount(info mediaInfo, haveSpeech bool) int {
 
 // ===== пересказ длинной расшифровки =====
 
-// chunkText режет текст на куски не длиннее maxRunes, стараясь рвать по абзацам и границам
-// предложений: разрыв посреди слова портит и пересказ, и поиск по тексту.
-func chunkText(s string, maxRunes int) []string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	if len([]rune(s)) <= maxRunes {
-		return []string{s}
-	}
-	var out []string
-	var cur strings.Builder
-	curLen := 0
-	flush := func() {
-		if curLen > 0 {
-			out = append(out, strings.TrimSpace(cur.String()))
-			cur.Reset()
-			curLen = 0
-		}
-	}
-	for _, para := range strings.Split(s, "\n") {
-		pr := []rune(para)
-		for len(pr) > 0 {
-			room := maxRunes - curLen
-			if room <= 0 {
-				flush()
-				room = maxRunes
-			}
-			take := len(pr)
-			if take > room {
-				take = room
-				// Отступаем до ближайшего пробела, чтобы не рвать слово.
-				for take > 0 && !isSpaceRune(pr[take-1]) {
-					take--
-				}
-				if take == 0 {
-					// В оставшееся место не влезает ни одного целого слова.
-					if curLen > 0 {
-						// Закрываем кусок и начинаем новый — там место точно найдётся.
-						// Без этой ветки хвост куска добирался по одному символу, слова
-						// рвались пополам, а при room==1 отступать было некуда и цикл
-						// крутился вечно: движок вставал намертво на пересказе длинной
-						// расшифровки. Оба дефекта поймал тест, а не живой ролик.
-						flush()
-						continue
-					}
-					take = room // слово длиннее целого куска — режем как есть
-				}
-			}
-			cur.WriteString(string(pr[:take]))
-			curLen += take
-			pr = pr[take:]
-			if curLen >= maxRunes {
-				flush()
-			}
-		}
-		cur.WriteString("\n")
-		curLen++
-	}
-	flush()
-	return out
-}
-
-func isSpaceRune(r rune) bool { return r == ' ' || r == '\t' || r == '\n' }
-
-// summariseTranscript сворачивает расшифровку любой длины картой-свёрткой: каждый кусок
-// пересказывается отдельно, пересказы склеиваются, и если склейка всё ещё велика — раунд
-// повторяется. Так «любой объём» упирается во время, а не в окно контекста.
+// summariseTranscript сворачивает расшифровку любой длины. Механизм общий (summarize.go),
+// здесь только роль: что в расшифровке ролика считать ценным.
 func summariseTranscript(ctx context.Context, cfg Config, question, text string) (string, error) {
 	sys := "Ты сжимаешь расшифровку видео для самого себя — это рабочая выжимка, а не отчёт человеку.\n" +
 		"Сохрани: о чём идёт речь, названия проектов, инструментов, репозиториев и ссылки, имена, числа, " +
@@ -805,54 +767,7 @@ func summariseTranscript(ctx context.Context, cfg Config, question, text string)
 	if q := strings.TrimSpace(question); q != "" {
 		sys += "\nОсобое внимание тому, что относится к вопросу: «" + capAgentText(q, 300) + "»."
 	}
-
-	calls := 0
-	one := func(part string) (string, error) {
-		calls++
-		cctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
-		defer cancel()
-		out, _, err := llmChatTools(cctx, cfg.BrainPort, []map[string]any{
-			{"role": "system", "content": sys},
-			{"role": "user", "content": "Сожми этот фрагмент расшифровки:\n\n" + part},
-		}, nil, 0.2)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(stripThink(out.Content)), nil
-	}
-
-	cur := text
-	for round := 0; round < 4; round++ {
-		parts := chunkText(cur, transcriptChunkChars)
-		if len(parts) == 1 {
-			return one(parts[0])
-		}
-		var acc []string
-		for _, p := range parts {
-			if ctx.Err() != nil {
-				break
-			}
-			if calls >= maxSummaryCalls {
-				acc = append(acc, "(дальше не пересказано: исчерпан лимит вызовов модели на один разбор)")
-				break
-			}
-			s, err := one(p)
-			if err != nil {
-				return "", err
-			}
-			if s != "" {
-				acc = append(acc, s)
-			}
-		}
-		if len(acc) == 0 {
-			return "", fmt.Errorf("модель вернула пустой пересказ")
-		}
-		cur = strings.Join(acc, "\n")
-		if len([]rune(cur)) <= transcriptChunkChars {
-			return one(cur)
-		}
-	}
-	return capAgentText(cur, transcriptInlineChars), nil
+	return mapReduceSummary(ctx, cfg, sys, text)
 }
 
 // ===== источник: файл или ссылка =====

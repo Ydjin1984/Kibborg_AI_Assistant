@@ -42,6 +42,10 @@ type Config struct {
 	WhisperModel string // путь к ggml-модели whisper (например ggml-base.bin)
 	WhisperPort  int
 	FfmpegPath   string // путь к ffmpeg; пусто = искать в PATH
+	// Документы (§23): PDF читается poppler'ом, сканы распознаёт tesseract.
+	PopplerDir    string // каталог с pdftotext/pdftoppm/pdfinfo; пусто = PATH
+	TesseractPath string // путь к tesseract.exe; пусто = PATH или стандартная установка
+	TessdataDir   string // каталог языковых пакетов OCR; пусто = runtime/tessdata
 
 	WebPort int // локальный веб-интерфейс (127.0.0.1); 0 = выключен
 
@@ -112,6 +116,9 @@ func loadConfig(iniPath string) Config {
 		WhisperModel:     kv["WHISPER_MODEL"],
 		WhisperPort:      atoiDefault(kv["PORT_WHISPER"], 8081),
 		FfmpegPath:       kv["FFMPEG"],
+		PopplerDir:       strings.TrimSpace(kv["POPPLER_DIR"]),
+		TesseractPath:    strings.TrimSpace(kv["TESSERACT"]),
+		TessdataDir:      strings.TrimSpace(kv["TESSDATA_DIR"]),
 
 		WebPort:    atoiDefault(kv["PORT_WEB"], 8090),
 		HandsRoots: strings.TrimSpace(kv["AGENT_HANDS_ROOTS"]),

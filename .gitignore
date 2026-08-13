@@ -29,3 +29,9 @@ desktop.ini
 ТЗ_слойный_агент.md
 ТЗ_Для новой фичи.md
 ПЕРВЫЙ_ЗАПУСК.md
+
+# Личные документы и разовые скрипты
+*.pdf
+engine-go/find_strategies.go
+engine-go/find_strategies.bat
+engine-go/run_find.bat

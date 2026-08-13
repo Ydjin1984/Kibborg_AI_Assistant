@@ -697,6 +697,8 @@ func toolStatusWord(name string) string {
 		return "👁 Смотрю кадры…"
 	case "media_info":
 		return "🎬 Смотрю метаданные…"
+	case "read_document":
+		return "📄 Читаю документ…"
 	case "convert_media":
 		return "🎞 Конвертирую…"
 	case "analyze_ticker", "size_position", "journal_add", "journal_stats":
@@ -1055,6 +1057,21 @@ func executorSystemPrompt(plan dispatchPlan, actor Actor) string {
 	}
 	if hasPack(plan.Packs, packMedia) {
 		b.WriteString(mediaPackRules)
+	}
+	if hasPack(plan.Packs, packFiles) {
+		// read_file на PDF возвращает бинарный мусор: файл-то он прочитает, только внутри
+		// сжатые потоки, а не текст. Модель после такого пересказывает мусор как содержание.
+		b.WriteString("\n\nPDF читается ТОЛЬКО через read_document — он берёт текстовый слой, " +
+			"а если внутри скан, распознаёт страницы. read_file на PDF вернёт двоичный мусор.\n" +
+			"Документ длинный — в ответе будет выжимка, а полный текст ляжет файлом: за точной " +
+			"формулировкой (номер, дата, сумма) читай этот файл read_file'ом, не пересказывай по памяти.\n" +
+			"БОЛЬШОЙ документ (справочник, руководство) целиком не пересказывается — в нём ИЩУТ:\n" +
+			"- read_document(path, find=\"термин\") — найдёт места и НОМЕРА СТРАНИЦ;\n" +
+			"- термин бери НА ЯЗЫКЕ ДОКУМЕНТА (он назван в разборе): в английском руководстве " +
+			"ищи fuse, relay, headlight, а не «предохранитель»;\n" +
+			"- нашёл нужный раздел — читай его страницы: read_document(path, pages=\"120-125\");\n" +
+			"- повторный вызов на том же файле дешёвый (текст берётся из прошлого разбора), " +
+			"но вызывать его С ТЕМИ ЖЕ аргументами бессмысленно: меняй find= или pages=.")
 	}
 	if hasPack(plan.Packs, packFiles) || hasPack(plan.Packs, packConsole) || hasPack(plan.Packs, packSystem) {
 		// Without this the model GUESSES the home directory. On the first live run it tried
