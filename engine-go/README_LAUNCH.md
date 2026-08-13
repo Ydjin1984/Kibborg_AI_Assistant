@@ -23,9 +23,8 @@ This directory contains dashboard-style launchers for the Go reference trading b
 
 ## Первый прогон агента
 
-После сборки и старта — `..\ПЕРВЫЙ_ЗАПУСК.md`: пошаговая приёмка слойного агента
-(измерения §3.2, маршрутизация, ворота безопасности, `/stop`, подтверждения) с командами
-чтения `runtime\tasks.jsonl` и `runtime\hands.jsonl`.
+После сборки и старта см. корневой `README.md` (разделы «Первый запуск» и
+«Если что-то не работает»). Журналы: `runtime\tasks.jsonl` и `runtime\hands.jsonl`.
 
 ## Files
 
