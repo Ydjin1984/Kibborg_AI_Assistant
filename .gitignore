@@ -35,3 +35,4 @@ desktop.ini
 engine-go/find_strategies.go
 engine-go/find_strategies.bat
 engine-go/run_find.bat
+.element-picks/

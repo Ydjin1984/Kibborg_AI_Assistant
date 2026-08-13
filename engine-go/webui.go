@@ -75,6 +75,14 @@ func newWebMux(cfg Config) *http.ServeMux {
 	mux.HandleFunc("/api/stop", sameOriginGuard(handleAPIStop))
 	mux.HandleFunc("/api/confirm", sameOriginGuard(func(w http.ResponseWriter, r *http.Request) { handleAPIConfirm(w, r, cfg) }))
 	mux.HandleFunc("/api/compact", sameOriginGuard(func(w http.ResponseWriter, r *http.Request) { handleAPICompact(w, r, cfg) }))
+	// Чтение того, что движок уже знает (webui_api.go): переписка после F5, файлы задач,
+	// свечи под график уровней. Тоже за sameOriginGuard — история и список файлов чужой
+	// странице не предназначены.
+	mux.HandleFunc("/api/history", sameOriginGuard(handleAPIHistory))
+	mux.HandleFunc("/api/artifacts", sameOriginGuard(handleAPIArtifacts))
+	mux.HandleFunc("/api/candles", sameOriginGuard(handleAPICandles))
+	// Иконки кнопок вшиты в бинарь рядом со страницей.
+	mux.HandleFunc("/icons/", handleAPIIcons)
 	return mux
 }
 
@@ -836,6 +844,13 @@ func emitAgentResult(emit func(map[string]any), userText string, res agentResult
 		"status":    string(res.Status),
 		"plan":      res.Plan,
 		"waiting":   res.Waiting,
+	}
+	// Что именно подтверждаем: инструмент, аргументы, правило ворот. Кнопки «да/нет» без
+	// этого предлагают согласиться неизвестно на что — в Telegram текст вопроса виден всегда.
+	if res.Waiting {
+		if p := pendingJSON(webChatID); p != nil {
+			payload["pending"] = p
+		}
 	}
 	if transcript != "" {
 		payload["transcript"] = transcript // UI shows «🎙 Распознал: …», parity with Telegram

@@ -361,14 +361,17 @@ func sizingBlock(cfg Config, report trading.DecisionReport) string {
 	if cfg.TradeBalance <= 0 {
 		return ""
 	}
+	// Методика Герчика считает объём от своего стопа и своей цели — она может дать сетап
+	// там, где скоринг остался нейтральным, поэтому её блок идёт независимо от Direction.
+	gerchik := gerchikSizingBlock(cfg, report)
 	dir := strings.ToLower(report.Direction)
 	if dir != "long" && dir != "short" {
-		return ""
+		return gerchik
 	}
 	entry, _ := report.Plan["entry"].(float64)
 	stop, _ := report.Plan["stop"].(float64)
 	if entry == 0 || stop == 0 {
-		return ""
+		return gerchik
 	}
 	tps, _ := report.Plan["take_profit"].([]float64)
 	s := trading.SizePosition(trading.SizingInput{

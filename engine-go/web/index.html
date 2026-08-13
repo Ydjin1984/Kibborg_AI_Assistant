@@ -5,390 +5,1034 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kibborg — панель управления</title>
 <style>
-  :root {
-    --bg: #0f1117; --panel: #171a23; --panel2: #1e2230; --border: #2a2f40;
-    --text: #e6e9f0; --muted: #8b93a7; --accent: #4f8cff; --green: #3ddc84;
-    --red: #ff5c5c; --yellow: #ffcc4d; --radius: 12px;
+  /* ══ Аврора: тёмная сцена, стеклянные слои, один нефритовый акцент ══ */
+  :root{
+    --bg:#080B10; --bg2:#0B0F15;
+    --glass:rgba(255,255,255,.038); --glass2:rgba(255,255,255,.062); --glass3:rgba(255,255,255,.085);
+    --edge:rgba(255,255,255,.078); --edge2:rgba(255,255,255,.14);
+    --text:#E8EEF0; --dim:#94A4A7; --faint:#65777C;
+    --jade:#6FBFA8; --jade2:#8FD6C2; --jade-deep:#2F6B5E;
+    --sand:#D8B37A; --rose:#D07A72; --sky:#7FA9C9; --violet:#9B8FD0;
+    --code-bg:#070A0D;
+    --r:16px; --r2:10px;
+    --shadow:0 20px 60px rgba(0,0,0,.4);
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--text);overflow:hidden;position:relative;
+    font:14px/1.6 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;
   }
-  header {
-    display: flex; align-items: center; gap: 16px; padding: 10px 18px;
-    background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap;
-  }
-  header h1 { font-size: 17px; font-weight: 700; }
-  header h1 span { color: var(--accent); }
-  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
-  .chip {
-    display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px;
-    background: var(--panel2); border: 1px solid var(--border); font-size: 12.5px; color: var(--muted);
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-  .dot.ok { background: var(--green); } .dot.warn { background: var(--yellow); } .dot.bad { background: var(--red); }
-  nav { display: flex; gap: 4px; padding: 8px 18px 0; background: var(--panel); border-bottom: 1px solid var(--border); }
-  nav button {
-    background: none; border: none; color: var(--muted); padding: 8px 16px; cursor: pointer;
-    font: inherit; font-weight: 600; border-bottom: 2px solid transparent;
-  }
-  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
-  main { flex: 1; overflow: hidden; display: flex; }
-  .tab { display: none; flex: 1; flex-direction: column; overflow: hidden; }
-  .tab.active { display: flex; }
+  /* тихое свечение по краям — атмосфера, а не градиентный герой */
+  body::before,body::after{content:"";position:fixed;pointer-events:none;z-index:0}
+  body::before{width:900px;height:900px;left:-330px;top:-390px;
+    background:radial-gradient(circle,rgba(111,191,168,.10),transparent 62%)}
+  body::after{width:1000px;height:1000px;right:-390px;bottom:-470px;
+    background:radial-gradient(circle,rgba(66,110,150,.11),transparent 62%)}
+  .mono{font-family:Consolas,"Cascadia Mono","SFMono-Regular",monospace;font-variant-numeric:tabular-nums}
+  .lbl{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .icon{width:17px;height:17px;flex:none;display:block}
+  button{font:inherit;color:inherit}
+  a{color:var(--jade2);text-decoration:none;border-bottom:1px solid rgba(143,214,194,.32)}
+  a:hover{border-bottom-color:var(--jade2)}
+  :focus-visible{outline:2px solid var(--jade);outline-offset:2px;border-radius:4px}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.10);border-radius:4px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.18)}
 
-  /* Чат */
-  #messages { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
-  .msg { max-width: 76%; padding: 10px 14px; border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; }
-  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-  .msg.bot  { align-self: flex-start; background: var(--panel2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-  .msg.bot.err { border-color: var(--red); color: var(--red); }
-  .msg.bot code { background: #12141c; padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace; font-size: 13px; }
-  .msg.bot pre { background: #12141c; padding: 10px; border-radius: 8px; overflow-x: auto; margin: 6px 0; }
-  .msg.bot pre code { background: none; padding: 0; }
-  .msg-meta { align-self: flex-start; font-size: 11.5px; color: var(--muted); margin: -4px 0 2px 4px; font-family: Consolas, monospace; }
-  .msg-tools { align-self: flex-start; margin: -4px 0 4px 4px; }
-  .copy-btn {
-    background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px;
-    padding: 2px 10px; font-size: 12px; cursor: pointer; font: inherit; font-size: 12px;
-  }
-  .copy-btn:hover { color: var(--text); border-color: var(--muted); }
-  .copy-btn.done { color: var(--green); border-color: var(--green); }
+  /* ── шапка ── */
+  header{position:relative;z-index:2;height:60px;display:flex;align-items:center;gap:22px;padding:0 26px}
+  .brand{display:flex;align-items:center;gap:11px;font-size:15.5px;font-weight:300;letter-spacing:.14em;
+    text-transform:uppercase;white-space:nowrap}
+  .brand b{font-weight:600;letter-spacing:.1em}
+  .orb{width:9px;height:9px;border-radius:50%;background:var(--jade);flex:none;
+    box-shadow:0 0 0 4px rgba(111,191,168,.13),0 0 18px rgba(111,191,168,.5)}
+  .orb.busy{animation:orbBeat 1.5s ease-in-out infinite}
+  @keyframes orbBeat{50%{box-shadow:0 0 0 8px rgba(111,191,168,.05),0 0 26px rgba(111,191,168,.8)}}
+  .orb.bad{background:var(--rose);box-shadow:0 0 0 4px rgba(208,122,114,.13)}
+  .health{display:flex;gap:18px;font-size:12.5px;color:var(--dim);font-weight:300;overflow:hidden}
+  .health .h{display:flex;align-items:center;gap:8px;white-space:nowrap}
+  .health i{width:5px;height:5px;border-radius:50%;background:var(--faint);flex:none}
+  .health i.ok{background:var(--jade)} .health i.warn{background:var(--sand)} .health i.bad{background:var(--rose)}
+  .head-r{margin-left:auto;display:flex;align-items:center;gap:9px}
+  .gbtn{background:var(--glass);border:1px solid var(--edge);color:var(--dim);border-radius:999px;
+    padding:7px 15px;font-size:12.5px;cursor:pointer;display:flex;align-items:center;gap:8px;
+    backdrop-filter:blur(12px);transition:border-color .18s,color .18s,background .18s}
+  .gbtn:hover{border-color:var(--edge2);color:var(--text)}
+  .gbtn.on{color:var(--sand);border-color:rgba(216,179,122,.34);background:rgba(216,179,122,.07)}
+  .gbtn:disabled{opacity:.45;cursor:default}
 
-  /* Окно состояния (живой индикатор скорости) */
-  #stateBar {
-    display: flex; align-items: center; gap: 14px; padding: 7px 18px;
-    background: var(--panel2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-    font-size: 12.5px; color: var(--muted); flex-wrap: wrap;
-  }
-  #stateBar .live { display: flex; align-items: center; gap: 7px; font-weight: 600; color: var(--text); }
-  #stateBar .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
-  #stateBar.gen .pulse { background: var(--green); animation: pulse 1s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
-  #stateBar .metric b { color: var(--text); font-variant-numeric: tabular-nums; }
-  #stateBar .sep { opacity: .4; }
-  /* Счётчик контекста: полоса заполнения + числа. Цвет меняется по мере заполнения,
-     чтобы «пора сжимать» было видно, не читая цифр. */
-  #ctxMeter { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-  #ctxBar { width: 120px; height: 7px; border-radius: 4px; background: var(--border); overflow: hidden; flex: none; }
-  #ctxFill { height: 100%; width: 0%; background: var(--green); transition: width .4s ease, background .4s ease; }
-  #ctxMeter.warn #ctxFill { background: #d8a13a; }
-  #ctxMeter.hot  #ctxFill { background: #d9534f; }
-  #ctxMeter .metric { cursor: help; }
-  .composer { display: flex; gap: 8px; padding: 12px 18px; background: var(--panel); border-top: 1px solid var(--border); align-items: flex-end; }
-  .composer textarea {
-    flex: 1; resize: none; background: var(--panel2); border: 1px solid var(--border); color: var(--text);
-    border-radius: var(--radius); padding: 10px 14px; font: inherit; min-height: 44px; max-height: 160px; outline: none;
-  }
-  .composer textarea:focus { border-color: var(--accent); }
-  .icon-btn {
-    background: var(--panel2); border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius);
-    width: 44px; height: 44px; font-size: 18px; cursor: pointer; flex: none;
-  }
-  .icon-btn:hover { color: var(--text); border-color: var(--muted); }
-  /* Плашка прикреплённого файла над композером */
-  #attachBar { display: none; padding: 8px 18px 0; background: var(--panel); }
-  .attach-chip {
-    display: inline-flex; align-items: center; gap: 10px; background: var(--panel2);
-    border: 1px solid var(--accent); border-radius: var(--radius); padding: 6px 10px; font-size: 13px; max-width: 100%;
-  }
-  .attach-chip img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; flex: none; }
-  .attach-chip .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
-  .attach-chip .rm { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 2px; }
-  .attach-chip .rm:hover { color: var(--red); }
-  #messages.dragover { outline: 2px dashed var(--accent); outline-offset: -8px; }
-  .msg.user .att-name { display: block; font-size: 12px; opacity: .85; margin-top: 4px; }
-  .msg.user img.att-thumb { max-width: 220px; border-radius: 8px; margin-top: 6px; display: block; }
-  button.primary {
-    background: var(--accent); color: #fff; border: none; border-radius: var(--radius);
-    padding: 0 20px; font: inherit; font-weight: 600; cursor: pointer;
-  }
-  button.primary:disabled { opacity: .5; cursor: default; }
-  button.ghost {
-    background: none; border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius);
-    padding: 0 14px; font: inherit; cursor: pointer;
-  }
-  button.ghost:hover { color: var(--text); border-color: var(--muted); }
-  button.icon-btn.mic-on {
-    color: #fff; background: #c0392b; border-color: #c0392b;
-    box-shadow: 0 0 0 3px rgba(192,57,43,.25);
-    animation: micPulse 1.1s ease-in-out infinite;
-  }
-  @keyframes micPulse {
-    0%, 100% { box-shadow: 0 0 0 3px rgba(192,57,43,.2); }
-    50% { box-shadow: 0 0 0 7px rgba(192,57,43,.08); }
-  }
+  /* ── каркас ── */
+  .shell{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1fr) 318px;gap:22px;
+    height:calc(100vh - 60px);padding:0 26px 22px}
+  .stage{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+  .stagebar{display:flex;align-items:center;gap:14px;padding:2px 0 16px;flex-wrap:wrap}
+  nav.tabs{display:flex;gap:3px;background:var(--glass);border:1px solid var(--edge);border-radius:999px;
+    padding:4px;backdrop-filter:blur(12px)}
+  nav.tabs button{background:none;border:none;border-radius:999px;padding:6px 15px;color:var(--dim);
+    font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;transition:.18s;white-space:nowrap}
+  nav.tabs button:hover{color:var(--text)}
+  nav.tabs button.on{background:var(--glass3);color:var(--text);box-shadow:inset 0 0 0 1px var(--edge)}
+  nav.tabs button .icon{width:15px;height:15px;opacity:.85}
+  .taskline{display:flex;align-items:center;gap:10px;margin-left:auto;font-size:12px;color:var(--faint)}
+  .taskline .pill{border:1px solid var(--edge);border-radius:999px;padding:3px 11px;color:var(--dim)}
+  .taskline .pill.live{color:var(--jade2);border-color:rgba(111,191,168,.32);background:rgba(111,191,168,.07)}
 
-  /* Анализ */
-  .analyze-wrap { padding: 18px; overflow-y: auto; }
-  .analyze-bar { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-  .analyze-bar input {
-    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
-    border-radius: var(--radius); padding: 10px 14px; font: inherit; width: 220px; outline: none; text-transform: uppercase;
-  }
-  .analyze-bar input:focus { border-color: var(--accent); }
-  .quick { display: flex; gap: 6px; margin-bottom: 14px; }
-  .quick button { padding: 5px 12px; }
-  #report {
-    background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 16px 18px; white-space: pre-wrap; word-break: break-word; display: none; font-size: 14.5px;
-  }
-  .analyze-section-title { font-size: 12.5px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .4px; margin: 16px 0 6px; display: none; }
-  #narration {
-    background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius);
-    padding: 16px 18px; white-space: pre-wrap; word-break: break-word; display: none; font-size: 14.5px; line-height: 1.6;
-  }
-  #narration code { background: #12141c; padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace; font-size: 13px; }
-  #analyzeTools { margin-top: 8px; display: none; }
-  #reportJson { margin-top: 10px; display: none; }
-  #reportJson pre {
-    background: #12141c; border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 12px; overflow-x: auto; font-size: 12.5px; max-height: 380px; overflow-y: auto;
-  }
-  details summary { cursor: pointer; color: var(--muted); }
+  .tab{display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden}
+  .tab.on{display:flex}
+  .scroll{flex:1;overflow-y:auto;padding-right:8px}
 
-  /* Статус */
-  .cards { padding: 18px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); align-content: start; overflow-y: auto; }
-  .card { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
-  .card h3 { font-size: 12.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 6px; }
-  .card .v { font-size: 19px; font-weight: 700; }
-  .card .s { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
-  .hint { grid-column: 1/-1; color: var(--muted); font-size: 13px; }
-  .hint code { background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
+  /* ── стеклянная панель ── */
+  .panel{background:var(--glass);border:1px solid var(--edge);border-radius:var(--r);
+    backdrop-filter:blur(16px);box-shadow:var(--shadow)}
+
+  /* ── чат ── */
+  #flow{display:flex;flex-direction:column;gap:22px;padding:4px 0 18px}
+  #flow.dragover{outline:1px dashed var(--jade);outline-offset:6px;border-radius:var(--r)}
+  .said{max-width:min(660px,88%);align-self:flex-end;text-align:right}
+  .said .lbl{display:block;margin-bottom:6px}
+  .said .txt{font-size:15px;font-weight:300;color:#CBD8DA;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+  .said .att{display:inline-flex;align-items:center;gap:8px;margin-top:9px;padding:6px 11px;border-radius:999px;
+    border:1px solid var(--edge);background:var(--glass);font-size:12px;color:var(--dim)}
+  .said img.att-thumb{max-width:230px;border-radius:12px;margin-top:9px;display:block;margin-left:auto;
+    border:1px solid var(--edge)}
+  .reply{max-width:min(760px,100%)}
+  .reply .lbl{display:block;margin-bottom:9px}
+  .reply.err .body{color:#E4A19B}
+  .body{font-size:15px;line-height:1.72;font-weight:300;word-break:break-word}
+  .body p{margin-bottom:11px}
+  .body p:last-child{margin-bottom:0}
+  .body strong,.body b{font-weight:600;color:#FFFFFF}
+  .body em{font-style:italic;color:#D6E2E3}
+  .body del{color:var(--faint)}
+  .body h1,.body h2,.body h3{font-weight:600;line-height:1.3;margin:18px 0 9px;letter-spacing:-.005em}
+  .body h1{font-size:20px} .body h2{font-size:17.5px} .body h3{font-size:15.5px;color:var(--jade2)}
+  .body h1:first-child,.body h2:first-child,.body h3:first-child{margin-top:0}
+  .body ul,.body ol{margin:0 0 11px 2px;padding-left:20px;display:flex;flex-direction:column;gap:5px}
+  .body li{padding-left:3px}
+  .body li::marker{color:var(--jade-deep)}
+  .body blockquote{border-left:2px solid var(--jade-deep);padding:2px 0 2px 14px;margin:0 0 11px;color:var(--dim)}
+  .body hr{border:none;border-top:1px solid var(--edge);margin:16px 0}
+  .body table{border-collapse:collapse;margin:0;font-size:13.5px;min-width:min(100%,420px)}
+  .body .tablewrap{overflow-x:auto;margin-bottom:12px}
+  .body th,.body td{border:1px solid var(--edge);padding:6px 11px;text-align:left}
+  .body th{background:var(--glass);font-weight:600;font-size:12.5px;letter-spacing:.02em}
+  .body td{font-variant-numeric:tabular-nums}
+  code.inl{font-family:Consolas,"Cascadia Mono",monospace;font-size:13px;color:var(--jade2);
+    background:rgba(111,191,168,.09);border:1px solid rgba(111,191,168,.16);border-radius:5px;padding:1px 6px}
+  /* блок кода */
+  .cblock{border:1px solid var(--edge);border-radius:12px;overflow:hidden;background:var(--code-bg);margin:0 0 13px}
+  .cblock .chead{display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--edge);
+    background:rgba(255,255,255,.025)}
+  .cblock .chead .lang{font-family:Consolas,monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--faint)}
+  .cblock .chead .copy{margin-left:auto;background:none;border:1px solid var(--edge);border-radius:6px;
+    color:var(--faint);font-size:11.5px;padding:2px 9px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .cblock .chead .copy:hover{color:var(--text);border-color:var(--edge2)}
+  .cblock .chead .copy.done{color:var(--jade2);border-color:rgba(111,191,168,.4)}
+  .cblock pre{margin:0;padding:12px 14px;overflow-x:auto}
+  .cblock code{font-family:Consolas,"Cascadia Mono",monospace;font-size:12.8px;line-height:1.62;color:#C9D6D8}
+  /* палитра подсветки */
+  .t-kw{color:#C79BE0} .t-type{color:#7FA9C9} .t-str{color:#8FD6C2} .t-num{color:#D8B37A}
+  .t-cm{color:#5B6D72;font-style:italic} .t-fn{color:#E4D8A8} .t-lit{color:#D07A72} .t-key{color:#9DBFD6}
+  .t-pun{color:#7C8B8E}
+
+  .meta{display:flex;align-items:center;gap:12px;margin-top:10px;font-size:11.5px;color:var(--faint);
+    font-family:Consolas,monospace;flex-wrap:wrap}
+  .tinybtn{background:none;border:1px solid var(--edge);border-radius:999px;color:var(--faint);
+    font-size:11.5px;padding:3px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+    font-family:inherit;text-decoration:none}
+  .tinybtn:hover{color:var(--text);border-color:var(--edge2)}
+  .tinybtn.done{color:var(--jade2);border-color:rgba(111,191,168,.4)}
+  .filelinks{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
+  .filelink{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--edge);border-radius:999px;
+    padding:5px 13px;font-size:12.5px;color:var(--dim);background:var(--glass);text-decoration:none}
+  .filelink:hover{color:var(--text);border-color:var(--edge2)}
+
+  /* индикатор работы */
+  .work{display:flex;align-items:baseline;gap:10px;font-size:14px;color:var(--dim);font-weight:300}
+  .work .sym{font-size:15px;color:var(--jade);width:1em;text-align:center;flex:none}
+  .work .what{color:var(--text)}
+  .work .wmeta{font-family:Consolas,monospace;font-size:11.5px;color:var(--faint)}
+
+  /* лента шагов агента */
+  .trace{padding:15px 17px;max-width:760px}
+  .trace .th{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .trace .th .lbl{color:var(--dim)}
+  .trace .th .r{margin-left:auto;font-size:11.5px;color:var(--faint);font-family:Consolas,monospace}
+  .tl{position:relative;padding-left:22px;display:flex;flex-direction:column;gap:2px}
+  .tl::before{content:"";position:absolute;left:4px;top:8px;bottom:10px;width:1px;
+    background:linear-gradient(180deg,var(--jade-deep),rgba(47,107,94,.12))}
+  .tl .s{position:relative;padding:5px 0;display:flex;align-items:baseline;gap:9px}
+  .tl .s::before{content:"";position:absolute;left:-22px;top:11px;width:9px;height:9px;border-radius:50%;
+    background:var(--bg);border:1.5px solid var(--jade-deep)}
+  .tl .s.done::before{background:var(--jade-deep)}
+  .tl .s.live::before{border-color:var(--jade);background:var(--jade);box-shadow:0 0 0 5px rgba(111,191,168,.14);
+    animation:beat 1.6s ease-in-out infinite}
+  .tl .s.warn::before{border-color:var(--sand);background:var(--sand)}
+  .tl .s.bad::before{border-color:var(--rose);background:var(--rose)}
+  @keyframes beat{50%{box-shadow:0 0 0 9px rgba(111,191,168,.04)}}
+  .tl .s .n{font-size:13px;color:#D3E0E1;font-weight:300;flex:1;min-width:0}
+  .tl .s .t{font-family:Consolas,monospace;font-size:11px;color:var(--faint);flex:none}
+
+  /* подтверждение */
+  .ask{padding:17px 19px;max-width:760px;border-color:rgba(216,179,122,.26);background:rgba(216,179,122,.05)}
+  .ask h4{font-size:15px;font-weight:500;margin-bottom:4px}
+  .ask .why{font-size:12.5px;color:var(--dim);font-weight:300;margin-bottom:12px}
+  .ask .cmd{font-family:Consolas,monospace;font-size:12.5px;color:#E7CFA0;background:rgba(0,0,0,.32);
+    border:1px solid var(--edge);border-radius:9px;padding:10px 13px;margin-bottom:13px;overflow-x:auto;
+    white-space:pre-wrap;word-break:break-all}
+  .ask .row{display:flex;gap:9px;flex-wrap:wrap}
+  .yes{background:rgba(111,191,168,.15);border:1px solid rgba(111,191,168,.38);color:#B6E5D6;border-radius:999px;
+    padding:8px 20px;font-size:13px;cursor:pointer}
+  .yes:hover{background:rgba(111,191,168,.22)}
+  .no{background:transparent;border:1px solid var(--edge2);color:var(--dim);border-radius:999px;
+    padding:8px 20px;font-size:13px;cursor:pointer}
+  .no:hover{color:var(--text)}
+
+  /* композер */
+  .dock{padding:12px 14px;display:flex;align-items:flex-end;gap:12px;border-radius:20px;margin-top:12px}
+  .dock textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font:inherit;font-size:14.5px;
+    font-weight:300;resize:none;min-height:26px;max-height:180px;line-height:1.55;padding:5px 0}
+  .dock textarea::placeholder{color:var(--faint)}
+  .ic{width:36px;height:36px;border-radius:50%;border:1px solid var(--edge);background:var(--glass2);color:var(--dim);
+    display:grid;place-items:center;cursor:pointer;flex:none;transition:.18s}
+  .ic:hover{color:var(--text);border-color:var(--edge2)}
+  .ic.rec{color:#fff;background:rgba(208,122,114,.9);border-color:transparent;animation:recPulse 1.2s ease-in-out infinite}
+  @keyframes recPulse{0%,100%{box-shadow:0 0 0 3px rgba(208,122,114,.2)}50%{box-shadow:0 0 0 8px rgba(208,122,114,.06)}}
+  .go{background:linear-gradient(135deg,var(--jade),#4E9C87);border:none;color:#04120E;font-weight:600;
+    border-radius:999px;padding:10px 21px;font-size:13.5px;cursor:pointer;flex:none;display:flex;align-items:center;gap:8px}
+  .go:disabled{opacity:.45;cursor:default}
+  .undock{display:flex;align-items:center;gap:9px;margin-top:9px;flex-wrap:wrap}
+  .undock .hint{margin-left:auto;font-size:11px;color:var(--faint);display:flex;gap:14px}
+  .undock .hint b{color:var(--dim);font-weight:500;font-family:Consolas,monospace}
+  #attachBar{display:none;margin-top:10px}
+  .attach{display:inline-flex;align-items:center;gap:11px;border:1px solid rgba(111,191,168,.3);
+    background:rgba(111,191,168,.06);border-radius:14px;padding:7px 12px;font-size:12.5px;max-width:100%}
+  .attach img{width:38px;height:38px;object-fit:cover;border-radius:8px;flex:none}
+  .attach .nm{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
+  .attach .rm{background:none;border:none;color:var(--faint);cursor:pointer;font-size:15px;line-height:1;padding:0 2px}
+  .attach .rm:hover{color:var(--rose)}
+
+  /* ── разбор ── */
+  .arow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .field{display:flex;align-items:center;gap:9px;background:var(--glass);border:1px solid var(--edge);
+    border-radius:999px;padding:8px 16px;backdrop-filter:blur(12px)}
+  .field:focus-within{border-color:rgba(111,191,168,.4)}
+  .field input{background:none;border:none;outline:none;color:var(--text);font:inherit;font-size:14px;width:150px}
+  .field.wide input{width:min(520px,52vw)}
+  .field input::placeholder{color:var(--faint)}
+  .quick{display:flex;gap:6px;flex-wrap:wrap}
+  .qb{background:var(--glass);border:1px solid var(--edge);border-radius:999px;padding:6px 14px;color:var(--dim);
+    font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .qb:hover{color:var(--text);border-color:var(--edge2)}
+  .qb.on{color:var(--jade2);border-color:rgba(111,191,168,.35);background:rgba(111,191,168,.08)}
+  .chartwrap{padding:14px 16px 10px;margin-bottom:14px;position:relative}
+  .chartwrap .ch{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+  .chartwrap .ch .lbl{color:var(--dim)}
+  .chartwrap .ch .legend{margin-left:auto;display:flex;gap:14px;font-size:11px;color:var(--faint);flex-wrap:wrap}
+  .chartwrap .ch .legend span{display:flex;align-items:center;gap:6px}
+  .chartwrap .ch .legend i{width:14px;height:0;border-top:1.5px dashed var(--sand);display:inline-block}
+  .chartwrap .ch .legend i.g{border-top-style:solid;border-color:var(--jade)}
+  .chartwrap .ch .legend i.r{border-top-style:solid;border-color:var(--rose)}
+  #chart{display:block;width:100%;height:290px;border-radius:10px}
+  .chartnote{font-size:11.5px;color:var(--faint);margin-top:8px}
+  .setups{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  @media (max-width:1180px){.setups{grid-template-columns:1fr}}
+  .setup{padding:15px 17px}
+  .setup .sh{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .setup .sh b{font-size:14.5px;font-weight:500}
+  .badge{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;border:1px solid;border-radius:999px;padding:2px 9px}
+  .badge.go{color:var(--jade2);border-color:rgba(111,191,168,.4);background:rgba(111,191,168,.08)}
+  .badge.wait{color:var(--sand);border-color:rgba(216,179,122,.4);background:rgba(216,179,122,.07)}
+  .badge.no{color:var(--rose);border-color:rgba(208,122,114,.4);background:rgba(208,122,114,.07)}
+  .lv{display:grid;grid-template-columns:104px 1fr auto;gap:10px;align-items:baseline;padding:5px 0;
+    border-bottom:1px solid rgba(255,255,255,.045);font-size:13px}
+  .lv:last-of-type{border-bottom:none}
+  .lv .k{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+  .lv .v{font-family:Consolas,monospace;font-weight:600;color:var(--text)}
+  .lv .x{font-family:Consolas,monospace;font-size:11.5px;color:var(--dim);text-align:right}
+  .blocks{margin-top:11px;border:1px solid rgba(208,122,114,.22);background:rgba(208,122,114,.05);
+    border-radius:10px;padding:9px 12px}
+  .blocks .lbl{color:var(--rose);display:block;margin-bottom:6px}
+  .blocks ul{list-style:none;display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}
+  .blocks li{display:flex;gap:8px}
+  .blocks li::before{content:"×";color:var(--rose);font-family:Consolas,monospace}
+  .section{padding:16px 19px;margin-bottom:14px}
+  .section>.lbl{display:block;margin-bottom:11px}
+  #reportJson pre{background:var(--code-bg);border:1px solid var(--edge);border-radius:10px;padding:12px;
+    overflow:auto;max-height:360px;font-family:Consolas,monospace;font-size:12px;color:#C9D6D8}
+  details summary{cursor:pointer;color:var(--faint);font-size:12.5px}
+
+  /* ── артефакты ── */
+  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(186px,1fr));gap:13px;padding-bottom:16px}
+  .tile{border:1px solid var(--edge);border-radius:14px;overflow:hidden;background:var(--glass);
+    display:flex;flex-direction:column;transition:.18s}
+  .tile:hover{border-color:var(--edge2);transform:translateY(-2px)}
+  .tile .pv{aspect-ratio:4/3;background:linear-gradient(140deg,rgba(111,191,168,.14),rgba(66,110,150,.12));
+    display:grid;place-items:center;overflow:hidden;position:relative}
+  .tile .pv img{width:100%;height:100%;object-fit:cover;display:block}
+  .tile .pv .icon{width:26px;height:26px;color:var(--faint)}
+  .tile .info{padding:9px 11px;display:flex;flex-direction:column;gap:3px;min-width:0}
+  .tile .nm{font-size:12.5px;color:#D3E0E1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tile .sub{font-family:Consolas,monospace;font-size:10.5px;color:var(--faint);display:flex;gap:8px}
+  .tile .acts{display:flex;gap:7px;padding:0 11px 10px}
+  .empty{color:var(--faint);font-size:13px;padding:20px 2px}
+
+  /* ── статус ── */
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:13px;padding-bottom:16px}
+  .card{padding:15px 17px;border-radius:14px}
+  .card h3{margin-bottom:9px}
+  .card .v{font-size:21px;font-weight:300;letter-spacing:-.01em}
+  .card .v b{font-weight:600}
+  .card .s{font-size:12px;color:var(--dim);margin-top:5px;font-weight:300;line-height:1.5}
+  .card .s code{font-family:Consolas,monospace;font-size:11.5px;color:var(--jade2)}
+
+  /* ── правая колонка ── */
+  aside{display:flex;flex-direction:column;gap:13px;overflow-y:auto;padding-bottom:4px;min-width:0}
+  .side{padding:15px 17px;border-radius:var(--r)}
+  .side h3{display:flex;align-items:center;margin-bottom:12px}
+  .side h3 .r{margin-left:auto;font-size:11px;color:var(--faint);cursor:pointer;background:none;border:none;padding:0}
+  .side h3 .r:hover{color:var(--dim)}
+  .big{display:flex;align-items:baseline;gap:9px;margin-bottom:8px}
+  .big b{font-size:31px;font-weight:200;letter-spacing:-.02em;
+    font-family:"Segoe UI Variable Display","Segoe UI",sans-serif}
+  .big span{font-size:11.5px;color:var(--faint)}
+  .kv{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;color:var(--dim);font-weight:300;padding:4px 0}
+  .kv b{color:var(--text);font-family:Consolas,monospace;font-weight:500;font-variant-numeric:tabular-nums}
+  .ring{display:flex;align-items:center;gap:15px}
+  .ring .info{font-size:12.5px;color:var(--dim);font-weight:300;display:flex;flex-direction:column;gap:2px}
+  .ring .info b{color:var(--text);font-family:Consolas,monospace;font-weight:500}
+  .sfile{display:flex;align-items:center;gap:10px;padding:5px 0;min-width:0}
+  .sfile .pv{width:40px;height:30px;border-radius:7px;flex:none;border:1px solid var(--edge);overflow:hidden;
+    background:linear-gradient(140deg,rgba(111,191,168,.2),rgba(66,110,150,.14));display:grid;place-items:center}
+  .sfile .pv img{width:100%;height:100%;object-fit:cover}
+  .sfile .nm{font-size:12.5px;color:#CBD8DA;font-weight:300;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sfile .sz{margin-left:auto;font-family:Consolas,monospace;font-size:10.5px;color:var(--faint);flex:none}
+
+  /* тосты */
+  #toasts{position:fixed;right:22px;bottom:22px;z-index:50;display:flex;flex-direction:column;gap:9px;align-items:flex-end}
+  .toast{background:rgba(14,20,26,.92);border:1px solid var(--edge);border-radius:12px;padding:10px 15px;
+    font-size:13px;color:var(--text);backdrop-filter:blur(14px);box-shadow:var(--shadow);max-width:380px;
+    display:flex;align-items:center;gap:10px;animation:tin .25s ease}
+  .toast.warn{border-color:rgba(216,179,122,.35)} .toast.bad{border-color:rgba(208,122,114,.4)}
+  @keyframes tin{from{opacity:0;transform:translateY(8px)}}
+
+  /* лайтбокс */
+  #lightbox{position:fixed;inset:0;background:rgba(4,7,10,.86);z-index:60;display:none;place-items:center;
+    padding:40px;backdrop-filter:blur(6px)}
+  #lightbox.on{display:grid}
+  #lightbox img{max-width:100%;max-height:100%;border-radius:14px;border:1px solid var(--edge);box-shadow:var(--shadow)}
+
+  @media (max-width:1120px){
+    .shell{grid-template-columns:minmax(0,1fr)}
+    aside{display:none}
+    .health{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
+
+<!-- иконки: один стиль, цвет наследуется от темы (web/icons — те же контуры).
+     Именно <symbol viewBox>, а не <g>: без собственного viewBox содержимое не масштабируется
+     под размер кнопки, и вместо иконки видно её левый верхний угол. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 5.5h16v10H9l-5 4z"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12 16V7M16 16v-6M20 16v-9"/></symbol>
+  <symbol id="i-agent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7 10 3 2.5L7 15M12.5 15H17"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="m16 11 5-3v8l-5-3z"/></symbol>
+  <symbol id="i-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h3l2 2.5h6A2.5 2.5 0 0 1 20 10v6.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 12h4l2.5-6 4 12 2.5-6h5"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9" y="2.4" width="6" height="11.2" rx="3"/><path d="M5.4 11.2a6.6 6.6 0 0 0 13.2 0"/>
+    <path d="M12 17.8V21.4M8.4 21.4h7.2"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21.44 11.05 12.25 20.24a6 6 0 1 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M3.28 20.62 21.7 12 3.28 3.38l-.08 6.82L14.7 12 3.2 13.8z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
+    <rect x="5.5" y="5.5" width="13" height="13" rx="2.5"/></symbol>
+  <symbol id="i-compress" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9h6V3M20 15h-6v6M4 9l6-6M20 15l-6 6"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.5 12a7.5 7.5 0 1 0 2.4-5.5L4 9"/><path d="M4 4v5h5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M5.5 15H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v.5"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 4v11M7.5 11 12 15.5 16.5 11M5 19.5h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.2 5 6v6c0 4.2 2.9 7.6 7 8.8 4.1-1.2 7-4.6 7-8.8V6z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13.5 6.5H18a2 2 0 0 1 2 2V13M10.5 17.5H6a2 2 0 0 1-2-2V11"/><path d="M9 15 15 9"/></symbol>
+  <symbol id="i-img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4.5 17 4.5-4 3.5 3 3-2.5 4.5 4"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 3.5h7l5 5v12H6z"/><path d="M13 3.5v5h5M9 13h6M9 16.5h6"/></symbol>
+  <symbol id="i-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 10v4M8 7v10M12 4.5v15M16 8v8M20 10.5v3"/></symbol>
+</svg>
+
 <header>
-  <h1>🤖 Kibborg <span>панель</span></h1>
-  <div class="chips">
-    <div class="chip"><span class="dot" id="dotBrain"></span><span id="chipBrain">мозг…</span></div>
-    <div class="chip"><span class="dot" id="dotChrome"></span><span id="chipChrome">Chrome…</span></div>
-    <div class="chip"><span class="dot" id="dotWhisper"></span><span id="chipWhisper">голос…</span></div>
-    <!-- Рубильник рук (ТЗ §6.4): runtime-store, один и тот же для Web и Telegram /hands. -->
-    <button class="chip" id="handsBtn" title="Длина рук: короткие — опасное спрашивает подтверждение; длинные — весь ПК без вопросов (ядерное переспрашивается один раз)">🛡 руки: короткие</button>
+  <div class="brand"><span class="orb" id="orb"></span><b>Kibborg</b></div>
+  <div class="health">
+    <span class="h"><i id="dotBrain"></i><span id="chipBrain">мозг…</span></span>
+    <span class="h"><i id="dotChrome"></i><span id="chipChrome">Chrome…</span></span>
+    <span class="h"><i id="dotWhisper"></i><span id="chipWhisper">голос…</span></span>
+  </div>
+  <div class="head-r">
+    <button class="gbtn" id="handsBtn" type="button" title="Длина рук: короткие — опасное спрашивает подтверждение; длинные — весь ПК без вопросов (ядерное переспрашивается один раз)">
+      <svg class="icon"><use href="#i-shield"></use></svg><span id="handsLabel">руки: короткие</span>
+    </button>
+    <button class="gbtn" id="compactBtn" type="button" title="Сжать историю диалога в сводку (аналог /compact)">
+      <svg class="icon"><use href="#i-compress"></use></svg>Сжать
+    </button>
+    <button class="gbtn" id="resetBtn" type="button" title="Очистить контекст диалога">
+      <svg class="icon"><use href="#i-reset"></use></svg>Сброс
+    </button>
   </div>
 </header>
-<nav>
-  <button class="active" data-tab="chat">💬 Чат</button>
-  <button data-tab="analyze">📊 Анализ</button>
-  <button data-tab="browser">🛠 Агент</button>
-  <button data-tab="video">🎬 Видео</button>
-  <button data-tab="status">🩺 Статус</button>
-</nav>
-<main>
-  <section class="tab active" id="tab-chat">
-    <div id="messages"></div>
-    <div id="stateBar">
-      <span class="live"><span class="pulse"></span><span id="stateLabel">простаивает</span></span>
-      <span class="metric" id="stateLive"></span>
-      <span class="sep">│</span>
-      <span class="metric" id="stateLast">скорость появится после первого ответа</span>
-      <span id="ctxMeter" title="Окно контекста модели: занято / всего токенов">
-        <span class="metric" id="ctxText">контекст: —</span>
-        <span id="ctxBar"><span id="ctxFill"></span></span>
-      </span>
-    </div>
-    <div id="attachBar"></div>
-    <div class="composer">
-      <button class="icon-btn" id="attachBtn" title="Прикрепить картинку, видео или файл (или перетащи / вставь Ctrl+V)">📎</button>
-      <button class="icon-btn" id="micBtn" title="Голос: зажми, говори, отпусти — распознаю и отвечу (TypeWhisper / whisper)">🎙</button>
-      <input type="file" id="fileInput" accept="image/*,audio/*,video/*,.mp4,.mov,.mkv,.avi,.m4v,.wmv,.webm,.ogg,.oga,.mp3,.wav,.m4a,.go,.py,.js,.ts,.tsx,.jsx,.rs,.c,.h,.cpp,.java,.kt,.cs,.rb,.php,.swift,.sh,.ps1,.bat,.cmd,.sql,.html,.css,.scss,.json,.yaml,.yml,.toml,.ini,.xml,.md,.csv,.txt,.log,.env,.conf" style="display:none">
-      <textarea id="input" rows="1" placeholder="Сообщение · найди… · запусти… · разбери видео · /agent · 🎙…"></textarea>
-      <button class="primary" id="send">Отправить</button>
-      <button class="ghost" id="stopBtn" title="Остановить текущую задачу агента (аналог /stop)">⏹ Стоп</button>
-      <button class="ghost" id="compactBtn" title="Сжать историю диалога в сводку: старое пересказывается, свежее остаётся дословно (аналог /compact)">🗜 Сжать</button>
-      <button class="ghost" id="reset" title="Очистить контекст диалога">Сброс</button>
-    </div>
-  </section>
 
-  <section class="tab" id="tab-analyze">
-    <div class="analyze-wrap">
-      <div class="analyze-bar">
-        <input id="symbol" placeholder="Тикер: BTC, ETH…" maxlength="16">
-        <button class="primary" id="run">Разбор</button>
-      </div>
-      <div class="quick">
-        <button class="ghost" data-sym="BTC">BTC</button>
-        <button class="ghost" data-sym="ETH">ETH</button>
-        <button class="ghost" data-sym="SOL">SOL</button>
-        <button class="ghost" data-sym="BNB">BNB</button>
-      </div>
-      <div class="analyze-section-title" id="reportTitle">📐 Детерминированный разбор (движок)</div>
-      <div id="report"></div>
-      <div class="analyze-section-title" id="narrationTitle">🧠 Комментарий нейросети</div>
-      <div id="narration"></div>
-      <div id="analyzeTools"><button class="copy-btn" id="copyAnalyze">📋 Копировать</button></div>
-      <div id="reportJson"><details><summary>Сырой DecisionReport (JSON)</summary><pre id="reportJsonPre"></pre></details></div>
+<div class="shell">
+  <main class="stage">
+    <div class="stagebar">
+      <nav class="tabs" id="tabs">
+        <button class="on" type="button" data-tab="chat"><svg class="icon"><use href="#i-chat"></use></svg>Чат</button>
+        <button type="button" data-tab="analyze"><svg class="icon"><use href="#i-chart"></use></svg>Разбор</button>
+        <button type="button" data-tab="agent"><svg class="icon"><use href="#i-agent"></use></svg>Агент</button>
+        <button type="button" data-tab="video"><svg class="icon"><use href="#i-video"></use></svg>Видео</button>
+        <button type="button" data-tab="files"><svg class="icon"><use href="#i-files"></use></svg>Файлы</button>
+        <button type="button" data-tab="status"><svg class="icon"><use href="#i-pulse"></use></svg>Статус</button>
+      </nav>
+      <div class="taskline" id="taskline"></div>
     </div>
-  </section>
 
-  <section class="tab" id="tab-browser">
-    <div class="analyze-wrap">
-      <p class="hint" style="margin-bottom:12px;color:var(--muted);font-size:13px">
-        Полный агент (как <code>/agent</code> / <code>/browser</code> в Telegram): терминал, файлы,
-        поиск, <code>read_url</code>, Agent Reach, Chrome CDP.
-        Chrome нужен только для вкладок: <code>--remote-debugging-port=9222</code>.
-        В обычном чате: «найди…», «запусти…», «прочитай файл…».
-      </p>
-      <div class="analyze-bar">
-        <input id="browserTask" placeholder="Задача: найди статьи / dir D:\ / таблица с вкладки…" style="flex:1;width:auto;min-width:280px;text-transform:none">
-        <button class="primary" id="browserRun">Выполнить</button>
+    <!-- ЧАТ -->
+    <section class="tab on" id="tab-chat">
+      <div class="scroll" id="flowScroll"><div id="flow"></div></div>
+      <div id="attachBar"></div>
+      <div class="panel dock">
+        <button class="ic" id="attachBtn" type="button" aria-label="Прикрепить файл"
+                title="Прикрепить картинку, видео, PDF или файл (можно перетащить или вставить Ctrl+V)">
+          <svg class="icon"><use href="#i-clip"></use></svg></button>
+        <button class="ic" id="micBtn" type="button" aria-label="Голосовое сообщение"
+                title="Голос: зажми, говори, отпусти — распознаю и отвечу">
+          <svg class="icon"><use href="#i-mic"></use></svg></button>
+        <input type="file" id="fileInput" style="display:none"
+               accept="image/*,audio/*,video/*,application/pdf,.pdf,.mp4,.mov,.mkv,.avi,.m4v,.wmv,.webm,.ogg,.oga,.mp3,.wav,.m4a,.go,.py,.js,.ts,.tsx,.jsx,.rs,.c,.h,.cpp,.java,.kt,.cs,.rb,.php,.swift,.sh,.ps1,.bat,.cmd,.sql,.html,.css,.scss,.json,.yaml,.yml,.toml,.ini,.xml,.md,.csv,.txt,.log,.env,.conf">
+        <textarea id="input" rows="1" placeholder="Сообщение · найди… · запусти… · разбери видео или PDF · /agent · голосом 🎙"></textarea>
+        <button class="go" id="send" type="button"><svg class="icon"><use href="#i-send"></use></svg>Отправить</button>
       </div>
-      <div id="browserOut" style="display:none;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;white-space:pre-wrap;word-break:break-word;margin-top:12px"></div>
-      <div id="browserFiles" style="margin-top:10px"></div>
-    </div>
-  </section>
-
-  <section class="tab" id="tab-video">
-    <div class="analyze-wrap">
-      <p class="hint" style="margin-bottom:12px;color:var(--muted);font-size:13px">
-        Скачать видео с YouTube / Instagram / TikTok / X в макс. качестве (yt-dlp).
-        В чате: просто ссылка или <code>/download &lt;url&gt;</code> — то же, что в Telegram.<br>
-        <b>Разбор</b> — не здесь, а в чате: перетащи ролик в окно чата (или 📎) и спроси, что нужно.
-        Распознаю речь любой длины, посмотрю кадры и отвечу по содержанию. Файл на диске:
-        «разбери D:\видео\урок.mp4».
-      </p>
-      <div class="analyze-bar">
-        <input id="videoURL" placeholder="https://youtube.com/watch?v=… или instagram.com/reel/…" style="flex:1;width:auto;min-width:280px;text-transform:none">
-        <button class="primary" id="videoRun">Скачать</button>
+      <div class="undock">
+        <button class="tinybtn" id="stopBtn" type="button"><svg class="icon" style="width:13px;height:13px"><use href="#i-stop"></use></svg>Стоп</button>
+        <span class="hint">
+          <span><b>Enter</b> отправить</span><span><b>Shift+Enter</b> перенос</span><span><b>Esc</b> остановить</span>
+        </span>
       </div>
-      <div id="videoOut" style="display:none;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;white-space:pre-wrap;word-break:break-word;margin-top:12px"></div>
-      <div id="videoFiles" style="margin-top:10px"></div>
-    </div>
-  </section>
+    </section>
 
-  <section class="tab" id="tab-status">
-    <div class="cards" id="cards"></div>
-  </section>
-</main>
+    <!-- РАЗБОР -->
+    <section class="tab" id="tab-analyze">
+      <div class="scroll">
+        <div class="arow">
+          <div class="field"><svg class="icon" style="color:var(--faint)"><use href="#i-chart"></use></svg>
+            <input id="symbol" placeholder="Тикер: BTC, ETH…" maxlength="16"></div>
+          <button class="go" id="run" type="button">Разобрать</button>
+          <div class="quick">
+            <button class="qb" type="button" data-sym="BTC">BTC</button><button class="qb" type="button" data-sym="ETH">ETH</button>
+            <button class="qb" type="button" data-sym="SOL">SOL</button><button class="qb" type="button" data-sym="BNB">BNB</button>
+          </div>
+        </div>
+
+        <div class="panel chartwrap" id="chartWrap" style="display:none">
+          <div class="ch">
+            <span class="lbl" id="chartTitle">График</span>
+            <div class="quick" id="tfs">
+              <button class="qb" type="button" data-tf="1h">1H</button><button class="qb" type="button" data-tf="4h">4H</button>
+              <button class="qb on" type="button" data-tf="1d">D1</button>
+            </div>
+            <div class="legend">
+              <span><i></i>уровни D1</span><span><i class="g"></i>лонг: вход и стоп</span><span><i class="r"></i>шорт: вход и стоп</span>
+            </div>
+          </div>
+          <canvas id="chart"></canvas>
+          <div class="chartnote" id="chartNote"></div>
+        </div>
+
+        <div class="setups" id="setups" style="display:none"></div>
+
+        <div class="panel section" id="reportBox" style="display:none">
+          <span class="lbl">Детерминированный разбор — считает движок</span>
+          <div class="body" id="report"></div>
+          <div class="meta"><button class="tinybtn" id="copyAnalyze" type="button"><svg class="icon" style="width:13px;height:13px"><use href="#i-copy"></use></svg>Копировать</button></div>
+        </div>
+
+        <div class="panel section" id="narrationBox" style="display:none">
+          <span class="lbl">Комментарий нейросети — интерпретация, не источник чисел</span>
+          <div class="body" id="narration"></div>
+        </div>
+
+        <div class="panel section" id="reportJson" style="display:none">
+          <details><summary>Сырой DecisionReport (JSON)</summary><pre id="reportJsonPre"></pre></details>
+        </div>
+      </div>
+    </section>
+
+    <!-- АГЕНТ -->
+    <section class="tab" id="tab-agent">
+      <div class="scroll">
+        <div class="panel section" style="margin-bottom:14px">
+          <span class="lbl">Полный агент</span>
+          <div class="body" style="font-size:13.5px;color:var(--dim)">
+            <p>То же, что <code class="inl">/agent</code> и <code class="inl">/browser</code> в Telegram: терминал, файлы, поиск,
+            <code class="inl">read_url</code>, Agent Reach, рабочий стол Windows и Chrome по CDP.</p>
+            <p>Chrome нужен только для вкладок — запусти его с <code class="inl">--remote-debugging-port=9222</code>.
+            В обычном чате руки те же: просто напиши «найди…», «запусти…», «прочитай файл…».</p>
+          </div>
+        </div>
+        <div class="arow">
+          <div class="field wide"><svg class="icon" style="color:var(--faint)"><use href="#i-agent"></use></svg>
+            <input id="agentTask" placeholder="Задача: найди статьи про… · dir D:\ · собери таблицу с открытой вкладки"></div>
+          <button class="go" id="agentRun" type="button">Выполнить</button>
+        </div>
+        <div id="agentOut"></div>
+      </div>
+    </section>
+
+    <!-- ВИДЕО -->
+    <section class="tab" id="tab-video">
+      <div class="scroll">
+        <div class="panel section" style="margin-bottom:14px">
+          <span class="lbl">Скачать ролик</span>
+          <div class="body" style="font-size:13.5px;color:var(--dim)">
+            <p>YouTube, Instagram, TikTok, X — в максимальном доступном качестве (yt-dlp). В чате работает то же самое:
+            пришли ссылку или <code class="inl">/download &lt;url&gt;</code>.</p>
+            <p><strong>Разбор</strong> ролика — не здесь, а в чате: перетащи файл в окно и спроси, что нужно.
+            Речь уйдёт в распознавание, кадры — в зрение. Файл на диске тоже подойдёт: «разбери D:\видео\урок.mp4».</p>
+          </div>
+        </div>
+        <div class="arow">
+          <div class="field wide"><svg class="icon" style="color:var(--faint)"><use href="#i-video"></use></svg>
+            <input id="videoURL" placeholder="https://youtube.com/watch?v=… или instagram.com/reel/…"></div>
+          <button class="go" id="videoRun" type="button">Скачать</button>
+        </div>
+        <div id="videoOut"></div>
+      </div>
+    </section>
+
+    <!-- ФАЙЛЫ -->
+    <section class="tab" id="tab-files">
+      <div class="scroll">
+        <div class="arow">
+          <div class="quick" id="fileFilters">
+            <button class="qb on" type="button" data-kind="all">Все</button><button class="qb" type="button" data-kind="image">Картинки</button>
+            <button class="qb" type="button" data-kind="video">Видео</button><button class="qb" type="button" data-kind="audio">Звук</button>
+            <button class="qb" type="button" data-kind="text">Документы</button>
+          </div>
+          <button class="qb" id="filesReload" type="button"><svg class="icon" style="width:13px;height:13px"><use href="#i-reset"></use></svg>Обновить</button>
+          <span class="lbl" id="filesCount" style="margin-left:auto"></span>
+        </div>
+        <div class="gallery" id="gallery"></div>
+      </div>
+    </section>
+
+    <!-- СТАТУС -->
+    <section class="tab" id="tab-status">
+      <div class="scroll"><div class="cards" id="cards"></div></div>
+    </section>
+  </main>
+
+  <aside>
+    <div class="panel side">
+      <h3><span class="lbl">Генерация</span><span class="r mono" id="genPhase">простаивает</span></h3>
+      <div class="big"><b id="genRate">—</b><span id="genUnit">ток/с</span></div>
+      <svg id="spark" width="100%" height="46" viewBox="0 0 280 46" preserveAspectRatio="none"
+           style="display:none" aria-label="Скорость генерации">
+        <defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#6FBFA8" stop-opacity=".34"/><stop offset="1" stop-color="#6FBFA8" stop-opacity="0"/>
+        </linearGradient></defs>
+        <path id="sparkFill" fill="url(#sg)" d=""></path>
+        <path id="sparkLine" fill="none" stroke="#6FBFA8" stroke-width="1.5" d=""></path>
+      </svg>
+      <div class="kv"><span>промпт</span><b id="genPrompt">—</b></div>
+      <div class="kv"><span>последний ответ</span><b id="genLast">—</b></div>
+    </div>
+
+    <div class="panel side">
+      <h3><span class="lbl">Контекст</span><button class="r" id="sideCompact" type="button">сжать</button></h3>
+      <div class="ring">
+        <svg width="78" height="78" viewBox="0 0 78 78">
+          <circle cx="39" cy="39" r="31" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="6"/>
+          <circle id="ctxRing" cx="39" cy="39" r="31" fill="none" stroke="#6FBFA8" stroke-width="6" stroke-linecap="round"
+                  stroke-dasharray="195" stroke-dashoffset="195" transform="rotate(-90 39 39)"/>
+          <text id="ctxPct" x="39" y="44" text-anchor="middle" fill="#E8EEF0" font-size="16"
+                font-family="Consolas, monospace">—</text>
+        </svg>
+        <div class="info">
+          <div>занято <b id="ctxUsed">—</b> из <b id="ctxTotal">—</b></div>
+          <div>история <b id="ctxHist">—</b> реплик</div>
+          <div>автосжатие на <b id="ctxAuto">—</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel side">
+      <h3><span class="lbl">Свежие файлы</span><button class="r" id="sideFilesAll" type="button">все</button></h3>
+      <div id="sideFiles"><div class="kv"><span>пока пусто</span></div></div>
+    </div>
+
+    <div class="panel side">
+      <h3><span class="lbl">Движок</span></h3>
+      <div class="kv"><span>диалогов</span><b id="stChats">—</b></div>
+      <div class="kv"><span>реплик в веб-чате</span><b id="stTurns">—</b></div>
+      <div class="kv"><span>память</span><b id="stMem">—</b></div>
+      <div class="kv"><span>аптайм</span><b id="stUptime">—</b></div>
+    </div>
+  </aside>
+</div>
+
+<div id="toasts"></div>
+<div id="lightbox"><img alt="просмотр файла" id="lightboxImg"></div>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
+const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls;
+  if (html !== undefined) n.innerHTML = html; return n; };
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const ic = (name, size) => '<svg class="icon"' + (size ? ' style="width:'+size+'px;height:'+size+'px"' : '') +
+  '><use href="#i-' + name + '"></use></svg>';
+const fmtK = n => n >= 1000 ? (n/1000).toFixed(1).replace(".0","") + "k" : String(n);
+const fmtSize = b => b >= 1048576 ? (b/1048576).toFixed(1) + " МБ"
+  : b >= 1024 ? Math.round(b/1024) + " КБ" : b + " Б";
+const fmtAge = s => s < 60 ? "только что" : s < 3600 ? Math.floor(s/60) + " мин назад"
+  : s < 86400 ? Math.floor(s/3600) + " ч назад" : Math.floor(s/86400) + " дн назад";
+const num = v => (typeof v === "number" ? v : 0).toLocaleString("ru-RU",
+  { maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 6 });
 
-/* ---------- вкладки ---------- */
-document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
-  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
-  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
-  b.classList.add("active");
-  $("tab-" + b.dataset.tab).classList.add("active");
+/* ═══ вкладки ═══ */
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.remove("on"));
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  $("tab-" + b.dataset.tab).classList.add("on");
+  if (b.dataset.tab === "files") loadArtifacts();
 });
 
-/* ---------- мини-рендер Markdown (жирный, код, блоки) ---------- */
-function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-function renderMd(s) {
-  // блоки кода отделяем до экранирования инлайна
-  const segs = s.split("```");
-  let html = "";
-  for (let i = 0; i < segs.length; i++) {
-    if (i % 2 === 0) {
-      html += esc(segs[i])
-        .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-        .replace(/`([^`\n]+)`/g, "<code>$1</code>");
-    } else {
-      let body = segs[i];
-      const nl = body.indexOf("\n");
-      if (nl >= 0 && /^[\w+-]*$/.test(body.slice(0, nl).trim())) body = body.slice(nl + 1);
-      html += "<pre><code>" + esc(body) + "</code></pre>";
-    }
-  }
-  return html;
+/* ═══ тосты ═══ */
+function toast(text, kind) {
+  const t = el("div", "toast" + (kind ? " " + kind : ""), esc(text));
+  $("toasts").appendChild(t);
+  setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .3s"; setTimeout(() => t.remove(), 320); }, 4200);
 }
 
-/* ---------- чат ---------- */
-const messages = $("messages"), input = $("input"), sendBtn = $("send");
-function bubble(cls, text) {
-  const div = document.createElement("div");
-  div.className = "msg " + cls;
-  div.textContent = text;
-  messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
-  return div;
+/* ═══ Markdown + подсветка кода ═══
+   Ответ модели — текст, который человек читает: код должен выглядеть кодом, ссылка — ссылкой,
+   выделение — выделением. Раньше сюда доезжали только **жирный** и `код`, и разбор с таблицей
+   уровней читался как сплошная простыня. */
+const KEYWORDS = {
+  go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var",
+  js: "async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while yield",
+  py: "and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield",
+  sh: "if then else elif fi for while do done case esac function return export local source echo cd set unset exit",
+  ps: "if else elseif foreach for while do switch function return param begin process end try catch finally throw",
+  sql: "select from where group by order having join left right inner outer on as insert into values update set delete create table drop alter index and or not null limit distinct",
+  rs: "as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self static struct trait type unsafe use where while",
+  css: "", json: "", html: "", yml: ""
+};
+const TYPES = {
+  go: "string int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 byte rune float32 float64 bool error any nil true false iota make new len cap append copy delete panic recover print println",
+  js: "console document window Math JSON Object Array String Number Boolean Promise Map Set null undefined true false NaN Infinity",
+  py: "self None True False int str float list dict set tuple bool print len range open Exception",
+  sh: "true false", ps: "true false null", sql: "int text varchar float date timestamp boolean",
+  rs: "String Vec Option Result Box i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool str usize None Some Ok Err true false",
+  css: "", json: "true false null", html: "", yml: "true false null"
+};
+const LANG_ALIAS = { golang:"go", go:"go", js:"js", javascript:"js", ts:"js", typescript:"js", jsx:"js", tsx:"js",
+  py:"py", python:"py", sh:"sh", bash:"sh", shell:"sh", zsh:"sh", console:"sh", powershell:"ps", ps1:"ps", pwsh:"ps",
+  sql:"sql", rust:"rs", rs:"rs", json:"json", css:"css", scss:"css", html:"html", xml:"html", yaml:"yml", yml:"yml",
+  ini:"yml", toml:"yml", conf:"yml", cmd:"ps", bat:"ps" };
+const COMMENT = { go:"\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/", js:"\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/",
+  rs:"\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/", css:"\\/\\*[\\s\\S]*?\\*\\/", py:"#[^\\n]*", sh:"#[^\\n]*",
+  ps:"#[^\\n]*", yml:"#[^\\n]*", sql:"--[^\\n]*", json:"(?!x)x", html:"<!--[\\s\\S]*?-->" };
+
+function langOf(raw) {
+  const k = String(raw || "").trim().toLowerCase();
+  return LANG_ALIAS[k] || (KEYWORDS[k] !== undefined ? k : "");
 }
-// copyText copies raw text to the clipboard with a clipboard-API → textarea fallback
-// (the fallback matters because http://127.0.0.1 is not a "secure context" in some browsers).
-async function copyText(text, btn) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const ta = document.createElement("textarea");
-      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.select();
-      document.execCommand("copy"); ta.remove();
+function highlight(code, lang) {
+  if (!lang) return esc(code);
+  const kw = new Set((KEYWORDS[lang] || "").split(" ").filter(Boolean));
+  const ty = new Set((TYPES[lang] || "").split(" ").filter(Boolean));
+  const cm = COMMENT[lang] || "(?!x)x";
+  const re = new RegExp(
+    "(?<cm>" + cm + ")" +
+    "|(?<str>\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'|`(?:\\\\.|[^`\\\\])*`)" +
+    "|(?<num>\\b0[xXbB][\\da-fA-F_]+\\b|\\b\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)" +
+    "|(?<fn>\\b[A-Za-z_][\\w]*(?=\\s*\\())" +
+    "|(?<word>[A-Za-z_$][\\w$]*)" +
+    "|(?<pun>[{}()\\[\\];,.:]|[+\\-*/%=<>!&|^~?]+)", "g");
+  let out = "", last = 0, m;
+  while ((m = re.exec(code)) !== null) {
+    out += esc(code.slice(last, m.index));
+    last = m.index + m[0].length;
+    const g = m.groups, raw = m[0];
+    let cls = "";
+    if (g.cm !== undefined) cls = "t-cm";
+    else if (g.str !== undefined) cls = (lang === "json" && /^\s*:/.test(code.slice(last))) ? "t-key" : "t-str";
+    else if (g.num !== undefined) cls = "t-num";
+    else if (g.fn !== undefined) cls = kw.has(raw) ? "t-kw" : "t-fn";
+    else if (g.word !== undefined) cls = kw.has(raw) ? "t-kw" : ty.has(raw) ? "t-type" : "";
+    else cls = "t-pun";
+    out += cls ? '<span class="' + cls + '">' + esc(raw) + "</span>" : esc(raw);
+  }
+  out += esc(code.slice(last));
+  return out;
+}
+
+let codeSeq = 0;
+const codeStore = new Map(); // id → исходный код блока: «копировать» отдаёт код, а не разметку
+
+// renderMd превращает ответ в читаемый HTML: заголовки, списки, таблицы, цитаты, ссылки,
+// выделения и блоки кода с подсветкой. Порядок важен: код вынимается ДО инлайна, иначе
+// звёздочки внутри кода превратятся в курсив.
+function renderMd(src) {
+  const text = String(src == null ? "" : src);
+  const blocks = [];
+  let body = text.replace(/```([\w+.-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const id = "cb" + (++codeSeq);
+    const clean = code.replace(/\n$/, "");
+    codeStore.set(id, clean);
+    blocks.push({ id, lang: langOf(lang), raw: lang, code: clean });
+    return "\u0000BLOCK" + (blocks.length - 1) + "\u0000";
+  });
+  const inls = [];
+  body = body.replace(/`([^`\n]+)`/g, (_, c) => { inls.push(c); return "\u0000INL" + (inls.length - 1) + "\u0000"; });
+
+  const lines = body.split("\n");
+  let html = "", list = null, para = [];
+  const flushPara = () => { if (para.length) { html += "<p>" + inline(para.join("<br>")) + "</p>"; para = []; } };
+  const closeList = () => { if (list) { html += "</" + list + ">"; list = null; } };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i], t = line.trim();
+    if (!t) { flushPara(); closeList(); continue; }
+
+    const blk = t.match(/^\u0000BLOCK(\d+)\u0000$/);
+    if (blk) {
+      flushPara(); closeList();
+      const b = blocks[+blk[1]];
+      html += '<div class="cblock"><div class="chead"><span class="lang">' +
+        esc(b.raw || b.lang || "код") + '</span>' +
+        '<button class="copy" type="button" data-code="' + b.id + '">' + ic("copy", 12) + 'Копировать</button></div>' +
+        "<pre><code>" + highlight(b.code, b.lang) + "</code></pre></div>";
+      continue;
     }
-    if (btn) { const t = btn.textContent; btn.textContent = "✓ Скопировано"; btn.classList.add("done");
-      setTimeout(() => { btn.textContent = t; btn.classList.remove("done"); }, 1500); }
-  } catch (e) { if (btn) btn.textContent = "✗ не вышло"; }
+    if (/^\|.*\|$/.test(t) && i + 1 < lines.length && /^\|[\s:|-]+\|$/.test(lines[i+1].trim())) {
+      flushPara(); closeList();
+      const cells = r => r.trim().replace(/^\||\|$/g, "").split("|").map(c => inline(esc(c.trim())));
+      let out = '<div class="tablewrap"><table><thead><tr>' +
+        cells(t).map(c => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
+      i += 2;
+      while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) {
+        out += "<tr>" + cells(lines[i]).map(c => "<td>" + c + "</td>").join("") + "</tr>";
+        i++;
+      }
+      i--;
+      html += out + "</tbody></table></div>";
+      continue;
+    }
+    const h = t.match(/^(#{1,3})\s+(.*)$/);
+    if (h) { flushPara(); closeList(); html += "<h" + h[1].length + ">" + inline(esc(h[2])) + "</h" + h[1].length + ">"; continue; }
+    if (/^([-*_])\1{2,}$/.test(t)) { flushPara(); closeList(); html += "<hr>"; continue; }
+    const q = t.match(/^>\s?(.*)$/);
+    if (q) { flushPara(); closeList(); html += "<blockquote>" + inline(esc(q[1])) + "</blockquote>"; continue; }
+    const ul = t.match(/^[-*•]\s+(.*)$/), ol = t.match(/^(\d+)[.)]\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const want = ul ? "ul" : "ol";
+      if (list !== want) {
+        closeList();
+        // Нумерация продолжается с того числа, что написала модель: список, начатый с «6.»,
+        // не должен молча превращаться в «1.» — это уже другой текст.
+        const start = ol && +ol[1] > 1 ? ' start="' + (+ol[1]) + '"' : "";
+        html += "<" + want + start + ">";
+        list = want;
+      }
+      html += "<li>" + inline(esc(ul ? ul[1] : ol[2])) + "</li>";
+      continue;
+    }
+    closeList();
+    para.push(esc(line));
+  }
+  flushPara(); closeList();
+  return html.replace(/\u0000INL(\d+)\u0000/g, (_, n) => '<code class="inl">' + esc(inls[+n]) + "</code>");
 }
-// addCopyButton appends a "copy" control under a bot bubble; getText returns the raw text.
-function addCopyButton(getText) {
-  const wrap = document.createElement("div");
-  wrap.className = "msg-tools";
-  const btn = document.createElement("button");
-  btn.className = "copy-btn";
-  btn.textContent = "📋 Копировать";
-  btn.onclick = () => copyText(getText(), btn);
-  wrap.appendChild(btn);
-  messages.appendChild(wrap);
-  return wrap;
+
+// inline обрабатывает разметку внутри уже экранированной строки: ссылки, жирный, курсив.
+function inline(s) {
+  let out = s;
+  out = out.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+|\/api\/files\/[^\s)]+)\)/g, (_, t, u) => link(u, t));
+  out = out.replace(/(^|[\s(>])((?:https?:\/\/|www\.)[^\s<>"')\]]+)/g,
+    (m, pre, u) => pre + link(u.startsWith("www.") ? "https://" + u : u, u));
+  out = out.replace(/(^|[\s(>])(\/api\/files\/[^\s<>"')\]]+)/g, (m, pre, u) => pre + link(u, u));
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+  out = out.replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>");
+  out = out.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  return out;
 }
-/* ---------- вложения (картинки и файлы) ---------- */
+function link(url, text) {
+  const safe = /^(https?:\/\/|\/api\/files\/)/.test(url) ? url : "#";
+  const local = safe.startsWith("/api/files/");
+  return '<a href="' + esc(safe) + '"' + (local ? " download" : ' target="_blank" rel="noopener noreferrer"') +
+    ">" + esc(text) + "</a>";
+}
+
+document.addEventListener("click", e => {
+  const btn = e.target.closest(".cblock .copy");
+  if (btn) copyText(codeStore.get(btn.dataset.code) || "", btn, "Копировать");
+});
+
+async function copyText(text, btn, back) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+    else {
+      const ta = el("textarea"); ta.value = text; ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    if (btn) {
+      btn.classList.add("done");
+      btn.innerHTML = ic("check", 12) + (back || "Скопировано");
+      setTimeout(() => { btn.classList.remove("done"); btn.innerHTML = ic("copy", 12) + (back || "Копировать"); }, 1600);
+    }
+  } catch (e) { toast("Не смог скопировать: " + e.message, "bad"); }
+}
+
+/* ═══ чат ═══ */
+const flow = $("flow"), flowScroll = $("flowScroll"), input = $("input"), sendBtn = $("send");
+function atBottom() { return flowScroll.scrollHeight - flowScroll.scrollTop - flowScroll.clientHeight < 120; }
+function scrollDown(force) { if (force || atBottom()) flowScroll.scrollTop = flowScroll.scrollHeight; }
+
+function said(text, file) {
+  const n = el("div", "said");
+  n.appendChild(el("span", "lbl", "Я"));
+  const t = el("div", "txt");
+  t.textContent = text || (file ? file.name : "");
+  n.appendChild(t);
+  if (file) {
+    if ((file.type || "").startsWith("image/")) {
+      const img = el("img", "att-thumb"); img.src = URL.createObjectURL(file); img.alt = file.name; n.appendChild(img);
+    } else n.appendChild(el("div", "att", ic("clip", 13) + esc(file.name)));
+  }
+  flow.appendChild(n); scrollDown(true);
+  return n;
+}
+function reply(html) {
+  const n = el("div", "reply");
+  n.appendChild(el("span", "lbl", "Kibborg"));
+  const b = el("div", "body", html || "");
+  n.appendChild(b);
+  flow.appendChild(n); scrollDown(true);
+  return b;
+}
+function replyText(text) { const b = reply(""); b.innerHTML = renderMd(text); return b; }
+function addCopy(host, getText) {
+  const m = el("div", "meta");
+  const btn = el("button", "tinybtn", ic("copy", 13) + "Копировать");
+  btn.type = "button";
+  btn.onclick = () => copyText(getText(), btn, "Копировать");
+  m.appendChild(btn);
+  host.appendChild(m);
+  return m;
+}
+function fileLinks(host, files) {
+  if (!files || !files.length) return;
+  const wrap = el("div", "filelinks");
+  for (const f of files) {
+    if (!f.url) continue;
+    const a = el("a", "filelink", ic("down", 14) + esc(f.name || "файл"));
+    a.href = f.url; a.download = f.name || "";
+    wrap.appendChild(a);
+  }
+  if (wrap.childNodes.length) host.appendChild(wrap);
+}
+
+/* ═══ индикатор работы ═══ */
+const WORK_SYMBOLS = ["·","✢","✳","∗","✻","✽","✶","✽","✻","∗","✳","✢"];
+let liveTokens = 0, workTimer = null, workNode = null, workStart = 0;
+
+function startWork(host, label) {
+  stopWork();
+  workNode = host; workStart = Date.now(); liveTokens = 0;
+  host.classList.add("work");
+  host.innerHTML = '<span class="sym">·</span><span class="what"></span><span class="wmeta"></span>';
+  setWorkLabel(label || "Думаю…");
+  let i = 0;
+  workTimer = setInterval(() => {
+    i = (i + 1) % WORK_SYMBOLS.length;
+    if (workNode) workNode.querySelector(".sym").textContent = WORK_SYMBOLS[i];
+    paintWorkMeta();
+  }, 220);
+}
+function setWorkLabel(text) {
+  if (!workNode || !text) return;
+  const what = workNode.querySelector(".what");
+  if (what) what.textContent = text;
+  paintWorkMeta();
+  scrollDown();
+}
+function paintWorkMeta() {
+  if (!workNode) return;
+  const meta = workNode.querySelector(".wmeta");
+  if (!meta) return;
+  const sec = Math.floor((Date.now() - workStart) / 1000);
+  let t = sec < 60 ? sec + " с" : Math.floor(sec/60) + " м " + (sec % 60) + " с";
+  if (liveTokens > 0) t += " · ↓ " + fmtK(liveTokens) + " ток.";
+  meta.textContent = "(" + t + ")";
+}
+// stopWork гасит анимацию, но НЕ стирает последний кадр: если поток оборвался, надпись
+// «Работаю с файлами… (2 м 14 с)» объясняет, на чём всё встало, а пустой блок — нет.
+function stopWork() {
+  if (workTimer) clearInterval(workTimer);
+  workTimer = null;
+  if (workNode) workNode.classList.remove("work");
+  workNode = null;
+}
+function firstWorkLabel(file) {
+  if (!file) return "Думаю…";
+  const t = file.type || "", n = file.name.toLowerCase();
+  if (t.startsWith("audio/") || /\.(ogg|oga|mp3|wav|m4a|webm)$/.test(n)) return "Распознаю речь…";
+  if (t.startsWith("image/")) return "Смотрю картинку…";
+  if (t === "application/pdf" || n.endsWith(".pdf")) return "Читаю документ…";
+  if (t.startsWith("video/") || /\.(mp4|mov|mkv|avi|m4v|wmv)$/.test(n)) return "Разбираю видео…";
+  return "Читаю файл…";
+}
+
+/* ═══ лента шагов ═══
+   Статусы приходят строками одна за другой. Раньше каждая затирала предыдущую, и по финальному
+   ответу нельзя было понять, что делалось и где потерялось время. */
+function newTrace(host) {
+  const box = el("div", "panel trace");
+  box.innerHTML = '<div class="th"><span class="lbl">Ход задачи</span><span class="r"></span></div><div class="tl"></div>';
+  host.appendChild(box);
+  const tl = box.querySelector(".tl"), counter = box.querySelector(".r");
+  const started = Date.now();
+  let steps = 0, lastNode = null, lastAt = started;
+  const secs = ms => { const s = ms / 1000;
+    return s < 60 ? s.toFixed(1) + " с" : Math.floor(s/60) + " м " + Math.round(s % 60) + " с"; };
+  const kindOf = t => /⛔|❌|не удалось|провал|ошибк/i.test(t) ? "bad"
+    : /⏸|⚠|подтвержд|очеред/i.test(t) ? "warn" : "done";
+  const close = () => {
+    if (!lastNode) return;
+    lastNode.classList.remove("live");
+    lastNode.classList.add(kindOf(lastNode.dataset.text || ""));
+    lastNode.querySelector(".t").textContent = secs(Date.now() - lastAt);
+  };
+  return {
+    add(text) {
+      if (!text) return;
+      close();
+      const s = el("div", "s live");
+      s.dataset.text = text;
+      s.innerHTML = '<span class="n"></span><span class="t">…</span>';
+      s.querySelector(".n").textContent = text;
+      tl.appendChild(s);
+      lastNode = s; lastAt = Date.now(); steps++;
+      counter.textContent = steps + (steps === 1 ? " шаг" : steps < 5 ? " шага" : " шагов");
+      scrollDown();
+    },
+    finish() {
+      close();
+      if (!steps) { box.remove(); return; }
+      counter.textContent = steps + " · " + secs(Date.now() - started);
+    }
+  };
+}
+
+/* ═══ вложения ═══ */
 let pendingFile = null;
 const attachBar = $("attachBar"), fileInput = $("fileInput");
 function setAttachment(file) {
   pendingFile = file;
-  if (!file) { attachBar.style.display = "none"; attachBar.innerHTML = ""; return; }
-  const isImg = file.type.startsWith("image/");
-  const chip = document.createElement("div");
-  chip.className = "attach-chip";
-  const thumb = isImg ? '<img id="attThumb" alt="">' : '<span style="font-size:20px">📄</span>';
-  const size = file.size >= 1048576
-    ? (file.size / 1048576).toFixed(1) + " МБ"
-    : Math.max(1, Math.round(file.size / 1024)) + " КБ";
-  const note = file.type.startsWith("video/") ? " · разбор займёт минуты" : "";
-  chip.innerHTML = thumb + '<span class="name">' + file.name +
-    ' · ' + size + note + '</span><button class="rm" title="Убрать">✕</button>';
   attachBar.innerHTML = "";
+  if (!file) { attachBar.style.display = "none"; return; }
+  const isImg = (file.type || "").startsWith("image/");
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  // Честное предупреждение о времени: у видео это речь и кадры, у скана — распознавание
+  // страницы за страницей. Без него молчащая панель выглядит зависшей.
+  const note = (file.type || "").startsWith("video/") ? " · разбор займёт минуты"
+    : isPdf ? " · текст сразу, скан — по секундам на страницу" : "";
+  const chip = el("div", "attach");
+  chip.innerHTML = (isImg ? '<img alt="">' : ic("doc", 20)) +
+    '<span class="nm">' + esc(file.name) + " · " + fmtSize(file.size) + note + "</span>" +
+    '<button class="rm" type="button" title="Убрать">×</button>';
   attachBar.appendChild(chip);
   attachBar.style.display = "block";
   chip.querySelector(".rm").onclick = () => setAttachment(null);
-  if (isImg) { const u = URL.createObjectURL(file); chip.querySelector("#attThumb").src = u; }
+  if (isImg) chip.querySelector("img").src = URL.createObjectURL(file);
 }
 $("attachBtn").onclick = () => fileInput.click();
 fileInput.onchange = () => { if (fileInput.files[0]) setAttachment(fileInput.files[0]); fileInput.value = ""; };
-// перетаскивание файла на область сообщений
-messages.addEventListener("dragover", e => { e.preventDefault(); messages.classList.add("dragover"); });
-messages.addEventListener("dragleave", () => messages.classList.remove("dragover"));
-messages.addEventListener("drop", e => {
-  e.preventDefault(); messages.classList.remove("dragover");
+flowScroll.addEventListener("dragover", e => { e.preventDefault(); flow.classList.add("dragover"); });
+flowScroll.addEventListener("dragleave", () => flow.classList.remove("dragover"));
+flowScroll.addEventListener("drop", e => {
+  e.preventDefault(); flow.classList.remove("dragover");
   if (e.dataTransfer.files[0]) setAttachment(e.dataTransfer.files[0]);
 });
-// вставка картинки из буфера (Ctrl+V)
 input.addEventListener("paste", e => {
   for (const item of e.clipboardData.items) {
     if (item.type.startsWith("image/")) { setAttachment(item.getAsFile()); e.preventDefault(); return; }
   }
 });
+function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 180) + "px"; }
+input.addEventListener("input", autoGrow);
 
+/* ═══ NDJSON ═══ */
+async function readNdjson(resp, onEvent) {
+  const reader = resp.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) { try { onEvent(JSON.parse(line)); } catch (_) {} }
+    }
+  }
+  if (buf.trim()) { try { onEvent(JSON.parse(buf.trim())); } catch (_) {} }
+}
+
+/* ═══ отправка ═══ */
 async function send() {
   const text = input.value.trim();
   if ((!text && !pendingFile) || sendBtn.disabled) return;
   const file = pendingFile;
   input.value = ""; autoGrow();
-  // пузырь пользователя: текст + превью вложения
-  const ub = bubble("user", text || (file ? "📎 " + file.name : ""));
-  if (file) {
-    if (file.type.startsWith("image/")) {
-      const img = document.createElement("img"); img.className = "att-thumb";
-      img.src = URL.createObjectURL(file); ub.appendChild(img);
-    } else {
-      const n = document.createElement("span"); n.className = "att-name"; n.textContent = "📄 " + file.name; ub.appendChild(n);
-    }
-  }
+  said(text, file);
   setAttachment(null);
-  const bot = bubble("bot", "…");
+
+  const host = el("div", "reply");
+  host.appendChild(el("span", "lbl", "Kibborg"));
+  const body = el("div", "body");
+  host.appendChild(body);
+  flow.appendChild(host);
+  startWork(body, firstWorkLabel(file));
   sendBtn.disabled = true;
+  let trace = null, answer = "";
+
   try {
     let resp;
     if (file) {
@@ -402,58 +1046,43 @@ async function send() {
         body: JSON.stringify({ message: text }),
       });
     }
-    if (!resp.ok) { bot.classList.add("err"); bot.textContent = "❌ " + (await resp.text()); sendBtn.disabled = false; return; }
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    const handleEv = (ev) => {
-      if (ev.error) { bot.classList.add("err"); bot.textContent = "❌ " + ev.error; }
-      // Лента статусов агента (ТЗ §8): показываем шаги, но никогда не CoT.
-      else if (ev.status !== undefined && !ev.done) { showAgentStatus(ev.status); }
-      else if (ev.done) {
-        clearAgentStatus();
-        const finalText = ev.text || "";
-        if (ev.waiting) { renderConfirmButtons(); }
-        if (ev.transcript) {
-          const tr = document.createElement("div");
-          tr.className = "msg-meta";
-          tr.textContent = "🎙 Распознал: «" + ev.transcript + "»";
-          bot.parentNode ? bot.parentNode.insertBefore(tr, bot) : messages.insertBefore(tr, bot);
-        }
-        bot.innerHTML = renderMd(finalText);
-        if (ev.files && ev.files.length) appendFileLinks(messages, ev.files);
+    if (!resp.ok) {
+      stopWork(); host.classList.add("err"); body.textContent = "⚠ " + (await resp.text());
+      sendBtn.disabled = false; return;
+    }
+    await readNdjson(resp, ev => {
+      if (ev.error) { stopWork(); host.classList.add("err"); body.textContent = "⚠ " + ev.error; return; }
+      if (ev.status !== undefined && !ev.done) {
+        if (!trace) trace = newTrace(host);
+        trace.add(ev.status);
+        setWorkLabel(ev.status.slice(0, 90));
+        return;
+      }
+      if (ev.done) {
+        stopWork();
+        if (trace) trace.finish();
+        answer = ev.text || "";
+        if (ev.transcript) host.insertBefore(el("div", "meta", "🎙 Распознал: «" + esc(ev.transcript) + "»"), body);
+        body.innerHTML = renderMd(answer);
+        if (ev.waiting) renderConfirm(host, ev.pending || null);
+        fileLinks(host, ev.files);
         if (ev.stats) {
-          const m = document.createElement("div");
-          m.className = "msg-meta";
-          m.textContent = "⚡ " + ev.stats.gen_tok_s + " ток/с · промпт " + ev.stats.prompt_tok_s +
-            " ток/с · " + ev.stats.gen_tokens + " ток за " + ev.stats.total_sec + " с";
-          messages.appendChild(m);
+          host.appendChild(el("div", "meta", "⚡ " + ev.stats.gen_tok_s + " ток/с · промпт " +
+            ev.stats.prompt_tok_s + " ток/с · " + ev.stats.gen_tokens + " ток за " + ev.stats.total_sec + " с"));
         }
-        addCopyButton(() => finalText);
+        addCopy(host, () => answer);
+        loadArtifactsSoon();
+        scrollDown();
+        return;
       }
-      else { bot.textContent = (ev.text || "") + " ▌"; }
-      messages.scrollTop = messages.scrollHeight;
-    };
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        handleEv(JSON.parse(line));
-      }
-    }
-    // Last NDJSON object without trailing newline (or non-stream JSON body).
-    if (buf.trim()) {
-      try { handleEv(JSON.parse(buf.trim())); } catch (_) { /* ignore trailing garbage */ }
-    }
+      stopWork();
+      body.innerHTML = renderMd((ev.text || "") + " ▌");
+      scrollDown();
+    });
   } catch (e) {
-    bot.classList.add("err");
-    bot.textContent = "❌ Нет связи с ботом: " + e.message;
+    stopWork(); host.classList.add("err"); body.textContent = "⚠ Нет связи с ботом: " + e.message;
   }
+  stopWork();
   sendBtn.disabled = false;
   input.focus();
 }
@@ -462,130 +1091,134 @@ input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 
-/* ---------- статусы шагов агента, стоп, подтверждение, рубильник рук ---------- */
-let statusBox = null;
-function showAgentStatus(text) {
-  if (!text) return;
-  if (!statusBox) {
-    statusBox = document.createElement("div");
-    statusBox.className = "msg-meta";
-    messages.appendChild(statusBox);
-  }
-  statusBox.textContent = text;
-  messages.scrollTop = messages.scrollHeight;
-}
-function clearAgentStatus() {
-  if (statusBox && statusBox.parentNode) statusBox.parentNode.removeChild(statusBox);
-  statusBox = null;
-}
-
-// Подтверждение опасного действия: те же «да/нет», что и в Telegram, но кнопками.
-function renderConfirmButtons() {
-  const row = document.createElement("div");
-  row.className = "quick";
-  const mk = (label, approve, cls) => {
-    const b = document.createElement("button");
-    b.className = cls; b.textContent = label;
-    b.onclick = async () => {
-      row.remove();
-      const bot = bubble("bot", "…");
-      try {
-        const resp = await fetch("/api/confirm", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ approve }),
-        });
-        await readNdjsonStream(resp, ev => {
-          if (ev.error) { bot.classList.add("err"); bot.textContent = "❌ " + ev.error; }
-          else if (ev.status !== undefined && !ev.done) showAgentStatus(ev.status);
-          else if (ev.done) {
-            clearAgentStatus();
-            bot.innerHTML = renderMd(ev.text || "");
-            if (ev.files && ev.files.length) appendFileLinks(messages, ev.files);
-          }
-          messages.scrollTop = messages.scrollHeight;
-        });
-      } catch (e) { bot.classList.add("err"); bot.textContent = "❌ " + e.message; }
-    };
-    return b;
+/* ═══ подтверждение опасного шага ═══
+   Кнопка «да» без текста вопроса — согласие неизвестно на что. Панель показывает инструмент,
+   аргументы и правило ворот: ровно то, что видно в Telegram. */
+function renderConfirm(host, p) {
+  const box = el("div", "panel ask");
+  const args = p && p.args ? p.args : "";
+  const why = [];
+  if (p && p.reason) why.push(esc(p.reason));
+  if (p && p.rule) why.push('правило <code class="inl">' + esc(p.rule) + "</code>");
+  if (p && p.expires_in) why.push("вопрос снимется через " + Math.max(1, Math.round(p.expires_in / 60)) + " мин");
+  box.innerHTML =
+    "<h4>" + (p && p.tool ? "Подтвердить: " + esc(p.tool) : "Подтвердить действие") + "</h4>" +
+    (why.length ? '<div class="why">' + why.join(" · ") + "</div>" : '<div class="why">Агент ждёт решения.</div>') +
+    (args ? '<div class="cmd">' + esc(args) + "</div>" : "") +
+    '<div class="row"><button class="yes" type="button">Выполнить</button>' +
+    '<button class="no" type="button">Отказать</button></div>';
+  const [yes, no] = box.querySelectorAll("button");
+  const answer = async approve => {
+    box.remove();
+    const h = el("div", "reply");
+    h.appendChild(el("span", "lbl", "Kibborg"));
+    const b = el("div", "body");
+    h.appendChild(b);
+    flow.appendChild(h);
+    startWork(b, approve ? "Выполняю…" : "Отменяю…");
+    let trace = null;
+    try {
+      const resp = await fetch("/api/confirm", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approve }),
+      });
+      await readNdjson(resp, ev => {
+        if (ev.error) { stopWork(); h.classList.add("err"); b.textContent = "⚠ " + ev.error; return; }
+        if (ev.status !== undefined && !ev.done) {
+          if (!trace) trace = newTrace(h);
+          trace.add(ev.status); setWorkLabel(ev.status.slice(0, 90));
+          return;
+        }
+        if (ev.done) {
+          stopWork();
+          if (trace) trace.finish();
+          const txt = ev.text || "";
+          b.innerHTML = renderMd(txt);
+          if (ev.waiting) renderConfirm(h, ev.pending || null);
+          fileLinks(h, ev.files);
+          addCopy(h, () => txt);
+          loadArtifactsSoon();
+        }
+      });
+    } catch (e) { stopWork(); h.classList.add("err"); b.textContent = "⚠ " + e.message; }
+    stopWork();
   };
-  row.appendChild(mk("✅ Да, выполнить", true, "primary"));
-  row.appendChild(mk("🚫 Нет", false, "ghost"));
-  messages.appendChild(row);
-  messages.scrollTop = messages.scrollHeight;
+  yes.onclick = () => answer(true);
+  no.onclick = () => answer(false);
+  host.appendChild(box);
+  scrollDown(true);
 }
 
+/* ═══ стоп · сжатие · сброс · руки ═══ */
 $("stopBtn").onclick = async () => {
   try {
-    const r = await fetch("/api/stop", { method: "POST" });
-    const j = await r.json();
-    bubble("bot", j.text || "⏹ Остановлено.");
-  } catch (e) { bubble("bot", "❌ " + e.message); }
+    const j = await (await fetch("/api/stop", { method: "POST" })).json();
+    toast(j.text || "Остановлено.");
+  } catch (e) { toast("Не вышло: " + e.message, "bad"); }
 };
-
-// Сжатие контекста: то же, что /compact в Telegram.
-$("compactBtn").onclick = async () => {
-  const btn = $("compactBtn");
-  btn.disabled = true; btn.textContent = "🗜 Сжимаю…";
+async function doCompact() {
+  const btns = [$("compactBtn"), $("sideCompact")];
+  btns.forEach(b => b && (b.disabled = true));
   try {
-    const r = await fetch("/api/compact", { method: "POST" });
-    const j = await r.json();
-    bubble("bot", j.text || "").innerHTML = renderMd(j.text || "");
+    const j = await (await fetch("/api/compact", { method: "POST" })).json();
+    replyText(j.text || "");
     if (j.context) paintContext(j.context);
-  } catch (e) { bubble("bot", "❌ " + e.message); }
-  btn.disabled = false; btn.textContent = "🗜 Сжать";
+    toast("Контекст сжат");
+  } catch (e) { toast("Не вышло: " + e.message, "bad"); }
+  btns.forEach(b => b && (b.disabled = false));
+}
+$("compactBtn").onclick = doCompact;
+$("sideCompact").onclick = doCompact;
+$("resetBtn").onclick = async () => {
+  try {
+    const r = await fetch("/api/reset", { method: "POST" });
+    flow.innerHTML = "";
+    replyText("Контекст диалога очищен — начинаем с чистого листа.");
+    const j = await r.json();
+    if (j.context) paintContext(j.context);
+  } catch (e) { toast("Не вышло: " + e.message, "bad"); }
 };
-
 const handsBtn = $("handsBtn");
 function paintHands(j) {
   const full = !!j.full;
-  handsBtn.textContent = (full ? "🖐 руки: длинные" : "🛡 руки: короткие");
+  $("handsLabel").textContent = full ? "руки: длинные" : "руки: короткие";
+  handsBtn.classList.toggle("on", full);
   handsBtn.title = (j.label || "").replace(/\*\*/g, "").replace(/`/g, "");
-  handsBtn.style.borderColor = full ? "#c2704a" : "";
-}
-async function refreshHands() {
-  try { paintHands(await (await fetch("/api/hands")).json()); } catch (_) {}
+  handsBtn.dataset.full = full ? "1" : "";
 }
 handsBtn.onclick = async () => {
   try {
-    const cur = handsBtn.textContent.includes("full");
-    const r = await fetch("/api/hands", {
+    const next = handsBtn.dataset.full ? "safe" : "full";
+    const j = await (await fetch("/api/hands", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: cur ? "safe" : "full" }),
-    });
-    const j = await r.json();
+      body: JSON.stringify({ mode: next }),
+    })).json();
     paintHands(j);
-    bubble("bot", j.label || "");
-  } catch (e) { bubble("bot", "❌ " + e.message); }
+    toast(next === "full"
+      ? "Руки длинные: весь ПК без вопросов, ядерное спрошу один раз"
+      : "Руки короткие: опасное спрошу, ядерное запрещено", next === "full" ? "warn" : "");
+  } catch (e) { toast("Не вышло: " + e.message, "bad"); }
 };
-refreshHands();
-function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
-input.addEventListener("input", autoGrow);
-$("reset").onclick = async () => {
-  const r = await fetch("/api/reset", { method: "POST" });
-  messages.innerHTML = "";
-  bubble("bot", "Контекст диалога очищен.");
-  // Счётчик перерисовываем сразу ответом сервера, а не ждём следующего опроса статуса:
-  // «сбросил, а внизу по-прежнему 2.2K» выглядит как несработавший сброс.
-  try { const j = await r.json(); if (j.context) paintContext(j.context); } catch (_) {}
-};
+(async () => { try { paintHands(await (await fetch("/api/hands")).json()); } catch (_) {} })();
 
-/* ---------- голос (микрофон Web → STT → чат, паритет с Telegram voice) ---------- */
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if ($("lightbox").classList.contains("on")) { $("lightbox").classList.remove("on"); return; }
+  $("stopBtn").click();
+});
+
+/* ═══ голос ═══ */
 const micBtn = $("micBtn");
 let mediaRec = null, mediaStream = null, micChunks = [], micStarting = false;
-function micSupported() {
-  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
-}
 function pickAudioMime() {
-  const cands = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
-  for (const m of cands) {
+  for (const m of ["audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus","audio/mp4"]) {
     if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
   }
   return "";
 }
 async function startMic() {
-  if (!micSupported()) {
-    bubble("bot", "❌ Браузер не даёт доступ к микрофону (нужен getUserMedia + MediaRecorder).");
-    return;
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) {
+    toast("Браузер не даёт доступ к микрофону", "bad"); return;
   }
   if (mediaRec || micStarting || sendBtn.disabled) return;
   micStarting = true;
@@ -594,350 +1227,509 @@ async function startMic() {
     const mime = pickAudioMime();
     mediaRec = mime ? new MediaRecorder(mediaStream, { mimeType: mime }) : new MediaRecorder(mediaStream);
     micChunks = [];
-    mediaRec.ondataavailable = (e) => { if (e.data && e.data.size) micChunks.push(e.data); };
+    mediaRec.ondataavailable = e => { if (e.data && e.data.size) micChunks.push(e.data); };
     mediaRec.start(200);
-    micBtn.classList.add("mic-on");
-    micBtn.title = "Запись… отпусти или кликни ещё раз, чтобы отправить";
+    micBtn.classList.add("rec");
   } catch (e) {
-    bubble("bot", "❌ Нет доступа к микрофону: " + e.message);
+    toast("Нет доступа к микрофону: " + e.message, "bad");
     stopMicStream();
   }
   micStarting = false;
 }
 function stopMicStream() {
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(t => t.stop());
-    mediaStream = null;
-  }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
   mediaRec = null;
-  micBtn.classList.remove("mic-on");
-  micBtn.title = "Голос: зажми, говори, отпусти — распознаю и отвечу (TypeWhisper / whisper)";
+  micBtn.classList.remove("rec");
 }
 async function stopMicAndSend() {
   if (!mediaRec) return;
-  const rec = mediaRec;
-  const mime = rec.mimeType || pickAudioMime() || "audio/webm";
-  const blob = await new Promise((resolve) => {
+  const rec = mediaRec, mime = rec.mimeType || pickAudioMime() || "audio/webm";
+  const blob = await new Promise(resolve => {
     rec.onstop = () => resolve(new Blob(micChunks, { type: mime }));
     try { rec.stop(); } catch (_) { resolve(new Blob(micChunks, { type: mime })); }
   });
   stopMicStream();
-  if (!blob || blob.size < 400) {
-    bubble("bot", "🎙 Слишком короткая запись — попробуй ещё раз.");
-    return;
-  }
+  if (!blob || blob.size < 400) { toast("Слишком короткая запись — попробуй ещё раз"); return; }
   const ext = mime.includes("ogg") ? "ogg" : mime.includes("mp4") ? "m4a" : "webm";
-  const file = new File([blob], "voice." + ext, { type: mime.split(";")[0] });
-  pendingFile = file;
   const caption = input.value.trim();
-  input.value = "";
-  autoGrow();
-  // Reuse send() path: set attachment UI briefly then submit
-  setAttachment(file);
+  input.value = ""; autoGrow();
+  setAttachment(new File([blob], "voice." + ext, { type: mime.split(";")[0] }));
   if (caption) input.value = caption;
   await send();
 }
-// Hold-to-talk (pointer) + click toggle for trackpads
-micBtn.addEventListener("pointerdown", (e) => {
+micBtn.addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
-  e.preventDefault();
-  micBtn.setPointerCapture(e.pointerId);
-  startMic();
+  e.preventDefault(); micBtn.setPointerCapture(e.pointerId); startMic();
 });
-micBtn.addEventListener("pointerup", (e) => {
-  e.preventDefault();
-  if (mediaRec) stopMicAndSend();
-});
+micBtn.addEventListener("pointerup", e => { e.preventDefault(); if (mediaRec) stopMicAndSend(); });
 micBtn.addEventListener("pointercancel", () => { if (mediaRec) { try { mediaRec.stop(); } catch (_) {} stopMicStream(); } });
-// Prevent context menu on long-press
-micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+micBtn.addEventListener("contextmenu", e => e.preventDefault());
 
-// appendFileLinks shows downloadable artifact links under a reply (videos, clones, …).
-function appendFileLinks(parent, files) {
-  const wrap = document.createElement("div");
-  wrap.className = "msg-tools";
-  wrap.style.display = "flex";
-  wrap.style.flexWrap = "wrap";
-  wrap.style.gap = "6px";
-  for (const f of files) {
-    if (!f.url) continue;
-    const a = document.createElement("a");
-    a.className = "copy-btn";
-    a.href = f.url;
-    a.download = f.name || "";
-    a.textContent = "⬇️ " + (f.name || "файл");
-    a.style.textDecoration = "none";
-    wrap.appendChild(a);
-  }
-  if (wrap.childNodes.length) parent.appendChild(wrap);
-}
+/* ═══ разбор инструмента ═══ */
+const runBtn = $("run");
+let lastAnalyzeText = "", lastGerchik = null, lastSymbol = "", chartTF = "1d", chartCandles = [];
 
-// readNdjsonStream reads NDJSON lines from a fetch Response and calls onEvent for each.
-async function readNdjsonStream(resp, onEvent) {
-  const reader = resp.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      onEvent(JSON.parse(line));
-    }
-  }
-}
-
-/* ---------- браузер-агент (паритет с Telegram /browser) ---------- */
-const browserOut = $("browserOut"), browserFiles = $("browserFiles"), browserRun = $("browserRun");
-async function runBrowser() {
-  const task = $("browserTask").value.trim();
-  if (!task || browserRun.disabled) return;
-  browserRun.disabled = true;
-  browserOut.style.display = "block";
-  browserOut.textContent = "🌐 Работаю…";
-  browserFiles.innerHTML = "";
-  try {
-    const resp = await fetch("/api/browser", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task }),
-    });
-    if (!resp.ok) { browserOut.textContent = "❌ " + (await resp.text()); browserRun.disabled = false; return; }
-    await readNdjsonStream(resp, ev => {
-      if (ev.error) browserOut.textContent = "❌ " + ev.error;
-      else if (ev.done) {
-        // plan[] — лента шагов от диспетчера (ТЗ §10 п. 25), summary уже первой строкой text.
-        let head = "";
-        if (ev.plan && ev.plan.length) {
-          head = "🧭 План:\n" + ev.plan.map((p, i) => (i + 1) + ". " + p).join("\n") + "\n\n";
-        }
-        browserOut.innerHTML = renderMd(head + (ev.text || ""));
-        browserFiles.innerHTML = "";
-        if (ev.files) appendFileLinks(browserFiles, ev.files);
-      } else if (ev.status) browserOut.textContent = ev.status;
-      else if (ev.text) browserOut.textContent = ev.text;
-    });
-  } catch (e) {
-    browserOut.textContent = "❌ " + e.message;
-  }
-  browserRun.disabled = false;
-}
-browserRun.onclick = runBrowser;
-$("browserTask").addEventListener("keydown", e => {
-  if (e.key === "Enter") { e.preventDefault(); runBrowser(); }
-});
-
-/* ---------- скачивание видео (паритет с Telegram /download) ---------- */
-const videoOut = $("videoOut"), videoFiles = $("videoFiles"), videoRun = $("videoRun");
-async function runVideo() {
-  const url = $("videoURL").value.trim();
-  if (!url || videoRun.disabled) return;
-  videoRun.disabled = true;
-  videoOut.style.display = "block";
-  videoOut.textContent = "🎬 Скачиваю…";
-  videoFiles.innerHTML = "";
-  try {
-    const resp = await fetch("/api/download_video", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    if (!resp.ok) { videoOut.textContent = "❌ " + (await resp.text()); videoRun.disabled = false; return; }
-    await readNdjsonStream(resp, ev => {
-      if (ev.error) videoOut.textContent = "❌ " + ev.error;
-      else if (ev.done) {
-        videoOut.innerHTML = renderMd(ev.text || "");
-        videoFiles.innerHTML = "";
-        if (ev.files) appendFileLinks(videoFiles, ev.files);
-      } else if (ev.text) videoOut.textContent = ev.text;
-    });
-  } catch (e) {
-    videoOut.textContent = "❌ " + e.message;
-  }
-  videoRun.disabled = false;
-}
-videoRun.onclick = runVideo;
-$("videoURL").addEventListener("keydown", e => {
-  if (e.key === "Enter") { e.preventDefault(); runVideo(); }
-});
-
-/* ---------- анализ ---------- */
-const report = $("report"), narration = $("narration"), reportJson = $("reportJson"), runBtn = $("run");
-let lastAnalyzeText = "";
-function showAnalyzeSections(on) {
-  $("reportTitle").style.display = on ? "block" : "none";
-  report.style.display = on ? "block" : "none";
-}
 async function analyze(sym) {
   sym = (sym || $("symbol").value).trim();
   if (!sym) return;
   $("symbol").value = sym.toUpperCase();
+  lastSymbol = sym.toUpperCase();
   runBtn.disabled = true;
-  showAnalyzeSections(true);
-  report.textContent = "⏳ Считаю по свечам Binance (15m / 1h / 4h)…";
-  $("narrationTitle").style.display = "none";
-  narration.style.display = "none";
-  narration.textContent = "";
-  $("analyzeTools").style.display = "none";
-  reportJson.style.display = "none";
+  $("reportBox").style.display = "block";
+  $("report").innerHTML = '<p style="color:var(--dim)">Считаю по свечам Binance: 15m, 1h, 4h и дневки под методику…</p>';
+  $("narrationBox").style.display = "none"; $("narration").innerHTML = "";
+  $("reportJson").style.display = "none";
+  $("setups").style.display = "none"; $("setups").innerHTML = "";
   let deterministic = "", narrText = "";
   try {
     const resp = await fetch("/api/analyze?symbol=" + encodeURIComponent(sym));
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        const ev = JSON.parse(line);
-        if (ev.error && !ev.done) { report.textContent = "❌ " + ev.error; }
-        if (ev.text !== undefined) {                 // детерминированный отчёт
-          deterministic = ev.text;
-          report.innerHTML = renderMd(ev.text);
-          if (ev.report) { $("reportJsonPre").textContent = JSON.stringify(ev.report, null, 2); reportJson.style.display = "block"; }
-        }
-        if (ev.narration !== undefined && !ev.done) { // стрим комментария нейросети
-          $("narrationTitle").style.display = "block";
-          narration.style.display = "block";
-          narrText = ev.narration;
-          narration.innerHTML = renderMd(narrText) + " ▌";
-        }
-        if (ev.done) {
-          if (ev.narration) {
-            narrText = ev.narration;
-            $("narrationTitle").style.display = "block";
-            narration.style.display = "block";
-            narration.innerHTML = renderMd(narrText);
-            if (ev.stats) {
-              const m = document.createElement("div");
-              m.className = "msg-meta"; m.style.alignSelf = "flex-start";
-              m.textContent = "⚡ " + ev.stats.gen_tok_s + " ток/с · " + ev.stats.gen_tokens + " ток за " + ev.stats.total_sec + " с";
-              narration.appendChild(m);
-            }
-          }
-          lastAnalyzeText = deterministic + (narrText ? "\n\n🧠 Комментарий нейросети:\n" + narrText : "");
-          $("analyzeTools").style.display = "block";
+    await readNdjson(resp, ev => {
+      if (ev.error && !ev.done) $("report").innerHTML = "<p>⚠ " + esc(ev.error) + "</p>";
+      if (ev.text !== undefined) {
+        deterministic = ev.text;
+        $("report").innerHTML = renderMd(ev.text);
+        if (ev.report) {
+          $("reportJsonPre").textContent = JSON.stringify(ev.report, null, 2);
+          $("reportJson").style.display = "block";
+          const g = ev.report.meta && ev.report.meta.gerchik;
+          if (g) { lastGerchik = g; renderSetups(g); loadCandles(); }
         }
       }
-    }
-  } catch (e) { report.textContent = "❌ Нет связи с ботом: " + e.message; }
+      if (ev.narration !== undefined && !ev.done) {
+        $("narrationBox").style.display = "block";
+        narrText = ev.narration;
+        $("narration").innerHTML = renderMd(narrText + " ▌");
+      }
+      if (ev.done) {
+        if (ev.narration) {
+          narrText = ev.narration;
+          $("narrationBox").style.display = "block";
+          $("narration").innerHTML = renderMd(narrText);
+          if (ev.stats) {
+            $("narration").appendChild(el("div", "meta", "⚡ " + ev.stats.gen_tok_s + " ток/с · " +
+              ev.stats.gen_tokens + " ток за " + ev.stats.total_sec + " с"));
+          }
+        }
+        lastAnalyzeText = deterministic + (narrText ? "\n\nКомментарий нейросети:\n" + narrText : "");
+      }
+    });
+  } catch (e) { $("report").innerHTML = "<p>⚠ Нет связи с ботом: " + esc(e.message) + "</p>"; }
   runBtn.disabled = false;
 }
 runBtn.onclick = () => analyze();
 $("symbol").addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
-document.querySelectorAll(".quick button").forEach(b => b.onclick = () => analyze(b.dataset.sym));
-$("copyAnalyze").onclick = () => copyText(lastAnalyzeText, $("copyAnalyze"));
+document.querySelectorAll("#tab-analyze .quick button[data-sym]").forEach(b => b.onclick = () => analyze(b.dataset.sym));
+$("copyAnalyze").onclick = () => copyText(lastAnalyzeText, $("copyAnalyze"), "Копировать");
 
-/* ---------- статус ---------- */
+// Сценариев всегда два: лонг и шорт. Методика требует обе границы, а не ту сторону,
+// к которой цена случайно оказалась ближе.
+function renderSetups(g) {
+  const box = $("setups");
+  box.innerHTML = "";
+  box.appendChild(setupCard("Лонг", g.long));
+  box.appendChild(setupCard("Шорт", g.short));
+  box.style.display = "grid";
+}
+function setupCard(title, s) {
+  const card = el("div", "panel setup");
+  const row = (k, v, x) => '<div class="lv"><span class="k">' + k + '</span><span class="v">' + v +
+    '</span><span class="x">' + esc(x || "") + "</span></div>";
+  if (!s || !s.entry) {
+    card.innerHTML = '<div class="sh"><b>' + title + '</b><span class="badge no">нет сценария</span></div>' +
+      '<div class="kv"><span>методика не собрала модель на этой стороне</span></div>';
+    return card;
+  }
+  const state = s.ready ? ["go", "вход по алгоритму"] : s.pending ? ["wait", "заготовка"] : ["no", "запрещён"];
+  const takes = (s.takes || []).filter(Boolean);
+  card.innerHTML =
+    '<div class="sh"><b>' + title + " · " + esc(s.model || "—") + "</b>" +
+      '<span class="badge ' + state[0] + '">' + state[1] + "</span></div>" +
+    row("уровень", num(s.level), s.order || "") +
+    row("вход", num(s.entry), s.direction === "long" ? "покупка" : "продажа") +
+    row("стоп", num(s.stop), s.sl_size ? "риск " + num(s.sl_size) : "") +
+    takes.map((t, i) => row("цель " + (i + 1), num(t),
+      i === 0 ? "RR " + (s.rr ? s.rr.toFixed(1) : "—") + " · нетто " + (s.rr_net ? s.rr_net.toFixed(1) : "—") : "")).join("") +
+    (s.level_target ? row("уровень впереди", num(s.level_target), s.tech_atr ? s.tech_atr.toFixed(2) + " ATR" : "") : "") +
+    (s.blocks && s.blocks.length
+      ? '<div class="blocks"><span class="lbl">Запреты методики</span><ul>' +
+        s.blocks.map(b => "<li><span>" + esc(b) + "</span></li>").join("") + "</ul></div>"
+      : (s.reasons && s.reasons.length
+        ? '<div class="kv" style="margin-top:9px"><span>' + esc(s.reasons[0]) + "</span></div>" : ""));
+  return card;
+}
+
+/* ═══ график: свечи движка + уровни методики ═══ */
+document.querySelectorAll("#tfs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tfs button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  chartTF = b.dataset.tf;
+  loadCandles();
+});
+async function loadCandles() {
+  if (!lastSymbol) return;
+  $("chartWrap").style.display = "block";
+  $("chartTitle").textContent = lastSymbol + " · " + (chartTF === "1d" ? "дневки" : chartTF.toUpperCase());
+  try {
+    const j = await (await fetch("/api/candles?symbol=" + encodeURIComponent(lastSymbol) +
+      "&tf=" + chartTF + "&limit=120")).json();
+    if (j.error) { $("chartNote").textContent = "⚠ " + j.error; return; }
+    chartCandles = j.candles || [];
+    drawChart();
+  } catch (e) { $("chartNote").textContent = "⚠ " + e.message; }
+}
+window.addEventListener("resize", () => { if (chartCandles.length) drawChart(); });
+
+function drawChart() {
+  const cv = $("chart"), box = cv.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(320, Math.floor(box.width)), H = 290;
+  cv.width = W * dpr; cv.height = H * dpr;
+  cv.style.height = H + "px";
+  const cx = cv.getContext("2d");
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx.clearRect(0, 0, W, H);
+
+  const bars = chartCandles;
+  if (!bars.length) return;
+  const g = lastGerchik || {};
+  const pad = { l: 4, r: 92, t: 12, b: 20 };
+  const marks = [];
+  const push = (price, color, text, dash) => { if (price) marks.push({ price, color, text, dash }); };
+  if (chartTF === "1d") {
+    (g.levels || []).slice(0, 8).forEach(l => push(l.price, "rgba(216,179,122,.5)", "", true));
+    if (g.support) push(g.support.price, "#D8B37A", "поддержка " + num(g.support.price), true);
+    if (g.resistance) push(g.resistance.price, "#D8B37A", "сопротивление " + num(g.resistance.price), true);
+    if (g.long && g.long.entry) {
+      push(g.long.entry, "#6FBFA8", "лонг " + num(g.long.entry), false);
+      push(g.long.stop, "rgba(111,191,168,.55)", "", true);
+    }
+    if (g.short && g.short.entry) {
+      push(g.short.entry, "#D07A72", "шорт " + num(g.short.entry), false);
+      push(g.short.stop, "rgba(208,122,114,.55)", "", true);
+    }
+  }
+  let hi = -Infinity, lo = Infinity;
+  for (const b of bars) { hi = Math.max(hi, b.h); lo = Math.min(lo, b.l); }
+  for (const m of marks) { hi = Math.max(hi, m.price); lo = Math.min(lo, m.price); }
+  const padV = (hi - lo) * 0.06 || 1;
+  hi += padV; lo -= padV;
+  const y = p => pad.t + (hi - p) / (hi - lo) * (H - pad.t - pad.b);
+  const cw = (W - pad.l - pad.r) / bars.length;
+
+  cx.font = "11px Consolas, monospace";
+  for (let i = 0; i <= 4; i++) {
+    const yy = pad.t + i * (H - pad.t - pad.b) / 4;
+    cx.strokeStyle = "rgba(255,255,255,.05)"; cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(0, yy); cx.lineTo(W - pad.r, yy); cx.stroke();
+    cx.fillStyle = "#65777C";
+    cx.fillText(num(hi - (hi - lo) * i / 4), W - pad.r + 8, yy + 4);
+  }
+  // зоны риска: где стоит стоп относительно входа
+  if (chartTF === "1d" && g.long && g.long.entry && g.long.stop) {
+    cx.fillStyle = "rgba(111,191,168,.09)";
+    cx.fillRect(0, y(g.long.entry), W - pad.r, y(g.long.stop) - y(g.long.entry));
+  }
+  if (chartTF === "1d" && g.short && g.short.entry && g.short.stop) {
+    cx.fillStyle = "rgba(208,122,114,.09)";
+    cx.fillRect(0, y(g.short.stop), W - pad.r, y(g.short.entry) - y(g.short.stop));
+  }
+  bars.forEach((b, i) => {
+    const x = pad.l + i * cw + cw / 2, up = b.c >= b.o;
+    cx.strokeStyle = up ? "rgba(111,191,168,.85)" : "rgba(208,122,114,.85)";
+    cx.fillStyle = up ? "rgba(111,191,168,.7)" : "rgba(208,122,114,.7)";
+    cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(x, y(b.h)); cx.lineTo(x, y(b.l)); cx.stroke();
+    const bw = Math.max(1.5, cw * 0.6);
+    cx.fillRect(x - bw / 2, y(Math.max(b.o, b.c)), bw, Math.max(1, Math.abs(y(b.o) - y(b.c))));
+  });
+  for (const m of marks) {
+    cx.strokeStyle = m.color; cx.lineWidth = m.dash ? 1 : 1.4;
+    cx.setLineDash(m.dash ? [6, 5] : []);
+    cx.beginPath(); cx.moveTo(0, y(m.price)); cx.lineTo(W - pad.r, y(m.price)); cx.stroke();
+    cx.setLineDash([]);
+    if (m.text) { cx.fillStyle = m.color; cx.fillText(m.text, 6, y(m.price) - 5); }
+  }
+  const note = [];
+  if (g.atr && g.atr.atr) note.push("ATR " + num(g.atr.atr) + " по " + g.atr.normal_days + " нормальным дням");
+  if (g.energy != null) note.push("энергия дня " + Math.round(g.energy * 100) + "%");
+  if (g.global_trend) note.push("тренд " + g.global_trend);
+  note.push(bars.length + " свечей · Binance");
+  $("chartNote").textContent = note.join(" · ");
+}
+
+/* ═══ агент и видео ═══ */
+function streamInto(host, url, payload, firstLabel) {
+  host.innerHTML = "";
+  const panel = el("div", "panel section");
+  const body = el("div", "body");
+  panel.appendChild(body);
+  host.appendChild(panel);
+  startWork(body, firstLabel);
+  let trace = null;
+  return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+    .then(async resp => {
+      if (!resp.ok) { stopWork(); body.textContent = "⚠ " + (await resp.text()); return; }
+      await readNdjson(resp, ev => {
+        if (ev.error) { stopWork(); body.textContent = "⚠ " + ev.error; return; }
+        if (ev.status !== undefined && !ev.done) {
+          if (!trace) trace = newTrace(panel);
+          trace.add(ev.status); setWorkLabel(ev.status.slice(0, 90));
+          return;
+        }
+        if (ev.done) {
+          stopWork();
+          if (trace) trace.finish();
+          let head = "";
+          if (ev.plan && ev.plan.length) head = "**План:**\n" + ev.plan.map((p, i) => (i + 1) + ". " + p).join("\n") + "\n\n";
+          body.innerHTML = renderMd(head + (ev.text || ""));
+          fileLinks(panel, ev.files);
+          addCopy(panel, () => ev.text || "");
+          loadArtifactsSoon();
+          return;
+        }
+        if (ev.text) { stopWork(); body.innerHTML = renderMd(ev.text); }
+      });
+    })
+    .catch(e => { stopWork(); body.textContent = "⚠ " + e.message; });
+}
+async function runAgent() {
+  const task = $("agentTask").value.trim();
+  if (!task || $("agentRun").disabled) return;
+  $("agentRun").disabled = true;
+  await streamInto($("agentOut"), "/api/browser", { task }, "Разбираю запрос…");
+  $("agentRun").disabled = false;
+}
+$("agentRun").onclick = runAgent;
+$("agentTask").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); runAgent(); } });
+
+async function runVideo() {
+  const url = $("videoURL").value.trim();
+  if (!url || $("videoRun").disabled) return;
+  $("videoRun").disabled = true;
+  await streamInto($("videoOut"), "/api/download_video", { url }, "Скачиваю в максимальном качестве…");
+  $("videoRun").disabled = false;
+}
+$("videoRun").onclick = runVideo;
+$("videoURL").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); runVideo(); } });
+
+/* ═══ артефакты ═══ */
+let artifacts = [], fileKind = "all", artifactsTimer = null;
+document.querySelectorAll("#fileFilters button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#fileFilters button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on"); fileKind = b.dataset.kind; paintGallery();
+});
+$("filesReload").onclick = () => loadArtifacts(true);
+$("sideFilesAll").onclick = () => document.querySelector('#tabs button[data-tab="files"]').click();
+function loadArtifactsSoon() { clearTimeout(artifactsTimer); artifactsTimer = setTimeout(() => loadArtifacts(true), 1200); }
+async function loadArtifacts(force) {
+  if (!force && artifacts.length) { paintGallery(); return; }
+  try {
+    const j = await (await fetch("/api/artifacts")).json();
+    artifacts = j.files || [];
+    $("filesCount").textContent = (j.total || 0) + " файлов в runtime/browser";
+    paintGallery(); paintSideFiles();
+  } catch (e) {
+    $("gallery").innerHTML = '<div class="empty">Не смог получить список файлов: ' + esc(e.message) + "</div>";
+  }
+}
+const kindIcon = kind => kind === "image" ? "img" : kind === "video" ? "video" : kind === "audio" ? "audio" : "doc";
+function paintGallery() {
+  const box = $("gallery");
+  const list = artifacts.filter(f => fileKind === "all" || f.kind === fileKind);
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">Здесь появятся скриншоты, ролики и выгрузки задач. Пока пусто.</div>';
+    return;
+  }
+  box.innerHTML = "";
+  for (const f of list.slice(0, 120)) {
+    const tile = el("div", "tile");
+    tile.innerHTML = (f.kind === "image"
+        ? '<div class="pv"><img loading="lazy" src="' + esc(f.url) + '" alt="' + esc(f.name) + '"></div>'
+        : '<div class="pv">' + ic(kindIcon(f.kind)) + "</div>") +
+      '<div class="info"><span class="nm" title="' + esc(f.rel) + '">' + esc(f.name) + "</span>" +
+      '<span class="sub"><span>' + fmtSize(f.size) + "</span><span>" + fmtAge(f.age_sec) + "</span></span></div>" +
+      '<div class="acts"><a class="tinybtn" href="' + esc(f.url) + '" download>' + ic("down", 13) + "Скачать</a>" +
+      (f.kind === "image" ? '<button class="tinybtn open" type="button">' + ic("link", 13) + "Открыть</button>" : "") + "</div>";
+    const open = tile.querySelector(".open");
+    if (open) open.onclick = () => { $("lightboxImg").src = f.url; $("lightbox").classList.add("on"); };
+    box.appendChild(tile);
+  }
+}
+function paintSideFiles() {
+  const box = $("sideFiles"), list = artifacts.slice(0, 4);
+  if (!list.length) { box.innerHTML = '<div class="kv"><span>пока пусто</span></div>'; return; }
+  box.innerHTML = "";
+  for (const f of list) {
+    const row = el("div", "sfile");
+    row.innerHTML = '<span class="pv">' + (f.kind === "image"
+        ? '<img loading="lazy" src="' + esc(f.url) + '" alt="">' : ic(kindIcon(f.kind), 15)) + "</span>" +
+      '<span class="nm" title="' + esc(f.rel) + '">' + esc(f.name) + "</span>" +
+      '<span class="sz">' + fmtSize(f.size) + "</span>";
+    row.style.cursor = "pointer";
+    row.onclick = () => {
+      if (f.kind === "image") { $("lightboxImg").src = f.url; $("lightbox").classList.add("on"); }
+      else window.location.href = f.url;
+    };
+    box.appendChild(row);
+  }
+}
+$("lightbox").onclick = () => $("lightbox").classList.remove("on");
+
+/* ═══ статус, скорость, контекст ═══ */
+const sparkData = [];
+function paintSpark() {
+  // Пустой график — это дыра в карточке: показываем его только когда есть что рисовать.
+  if (sparkData.length < 2) { $("spark").style.display = "none"; return; }
+  $("spark").style.display = "block";
+  const w = 280, h = 46, max = Math.max(...sparkData, 1), step = w / (sparkData.length - 1);
+  const pts = sparkData.map((v, i) => [i * step, h - 3 - (v / max) * (h - 8)]);
+  const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  $("sparkLine").setAttribute("d", d);
+  $("sparkFill").setAttribute("d", d + " L" + w + " " + h + " L0 " + h + " Z");
+}
+function paintContext(c) {
+  if (!c || !c.total) { $("ctxPct").textContent = "—"; return; }
+  const used = c.used || 0;
+  const pct = c.pct != null ? c.pct : Math.round(used * 100 / c.total);
+  const ring = $("ctxRing");
+  ring.setAttribute("stroke-dashoffset", 195 - 195 * Math.min(100, pct) / 100);
+  ring.setAttribute("stroke", pct >= 85 ? "#D07A72" : pct >= 60 ? "#D8B37A" : "#6FBFA8");
+  $("ctxPct").textContent = pct + "%";
+  $("ctxUsed").textContent = fmtK(used);
+  $("ctxTotal").textContent = fmtK(c.total);
+  $("ctxHist").textContent = c.history_msgs != null ? c.history_msgs : "—";
+  $("ctxAuto").textContent = c.auto_compact_at != null ? c.auto_compact_at : "—";
+}
+function setChip(dotId, textId, state, text) {
+  $(dotId).className = state;
+  $(textId).textContent = text;
+}
+function paintActivity(a) {
+  if (!a) return;
+  const gen = a.phase === "generating";
+  $("orb").classList.toggle("busy", gen);
+  $("orb").classList.remove("bad");
+  $("genPhase").textContent = gen ? ("работа" + (a.turns > 0 ? " · ход " + a.turns : "")) : "простаивает";
+  $("taskline").innerHTML = gen
+    ? '<span class="pill live">' + esc(a.label || "работаю") + '</span><span class="mono">' + (a.elapsed_sec || 0) + " с</span>"
+    : "";
+  if (gen && a.live_tok_per_sec != null) {
+    $("genRate").textContent = a.live_tok_per_sec;
+    // per_turn = цифры обновляются раз в ход модели, а не раз в токен. Подписано честно:
+    // замершая цифра без объяснения читается как поломка.
+    $("genUnit").textContent = "ток/с" + (a.per_turn ? " (за ход)" : "") + " · " + (a.live_tokens || 0) + " ток";
+    if (a.live_tok_per_sec && a.live_tok_per_sec !== sparkData[sparkData.length - 1]) {
+      sparkData.push(a.live_tok_per_sec);
+      if (sparkData.length > 40) sparkData.shift();
+      paintSpark();
+    }
+  } else if (!gen) $("genUnit").textContent = "ток/с";
+  const L = a.last;
+  if (L && L.has) {
+    if (!gen) $("genRate").textContent = L.gen_tok_s;
+    $("genPrompt").textContent = L.prompt_tok_s + " ток/с";
+    $("genLast").textContent = L.gen_tokens + " ток / " + (L.total_ms / 1000).toFixed(1) + " с";
+  }
+}
+const card = (title, value, sub) =>
+  '<div class="panel card"><h3 class="lbl">' + title + '</h3><div class="v">' + value + "</div>" +
+  (sub ? '<div class="s">' + sub + "</div>" : "") + "</div>";
+
+async function refreshStatus() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    if (s.activity && s.activity.phase === "generating") liveTokens = s.activity.live_tokens || liveTokens;
+    paintActivity(s.activity);
+    paintContext(s.context);
+    setChip("dotBrain", "chipBrain", s.brain_ready ? "ok" : "warn", s.brain_ready ? "мозг готов" : "мозг грузится");
+    setChip("dotChrome", "chipChrome", s.chrome_tabs >= 0 ? "ok" : "bad",
+      s.chrome_tabs >= 0 ? "Chrome · " + s.chrome_tabs : "Chrome недоступен");
+    const vLabel = s.voice_backend || "голос";
+    setChip("dotWhisper", "chipWhisper", s.whisper === "ready" ? "ok" : s.whisper === "down" ? "bad" : "warn",
+      s.whisper === "ready" ? "голос · " + vLabel : s.whisper === "down" ? vLabel + " недоступен" : "голос выключен");
+    $("stChats").textContent = s.chats;
+    $("stTurns").textContent = s.web_turns;
+    $("stMem").textContent = s.memory && s.memory.enabled
+      ? ((s.memory.web_episodes != null ? s.memory.web_episodes : 0) + " эпизодов") : "выключена";
+    $("stUptime").textContent = fmtUptime(s.uptime_sec);
+    $("cards").innerHTML =
+      card("Мозг (LLM)", s.brain_ready ? "<b>Готов</b>" : "Грузится…",
+        esc(s.model || "модель не задана") + " · порт " + s.brain_port +
+        (s.brain_vision ? " · зрение включено" : " · зрения нет (mmproj не загружен)")) +
+      card("Chrome (CDP)", s.chrome_tabs >= 0 ? "<b>" + s.chrome_tabs + "</b> вкладок" : "Недоступен",
+        s.chrome_tabs >= 0 ? "порт 9222" : "запусти Chrome с <code>--remote-debugging-port=9222</code>") +
+      card("Голос (STT)", s.whisper === "ready" ? "<b>Готов</b>" : s.whisper === "down" ? "Не отвечает" : "Выключен",
+        s.whisper === "off" ? "TypeWhisper API (порт 8978) или WHISPER_* в settings.ini"
+          : "TypeWhisper: " + (s.typewhisper ? "ok" : "—") + " · whisper.cpp: " + (s.whisper_cpp ? "ok" : "—")) +
+      card("Диалоги", "<b>" + s.chats + "</b> чатов", "веб-чат: " + s.web_turns + " реплик") +
+      card("Контекст", s.context && s.context.total
+          ? "<b>" + fmtK(s.context.used || 0) + "</b> / " + fmtK(s.context.total) +
+            (s.context.pct != null ? " · " + s.context.pct + "%" : "")
+          : "неизвестен",
+        s.context ? "история: " + (s.context.history_msgs || 0) + " реплик ≈ " + (s.context.history_tokens || 0) +
+          " ток. · автосжатие на " + (s.context.auto_compact_at || "?") : "модель ещё грузится") +
+      card("Руки", s.hands ? (s.hands.mode === "full" ? "<b>Длинные</b>" : "<b>Короткие</b>") : "—",
+        s.hands && s.hands.mode === "full"
+          ? "весь ПК без подтверждений; ядерное переспрашивается один раз"
+          : "опасное спрашивает подтверждение; ядерное запрещено") +
+      card("Память", s.memory && s.memory.enabled ? "<b>Включена</b>" : "Выключена",
+        s.memory && s.memory.enabled
+          ? "эпизодов веб-чата: " + (s.memory.web_episodes != null ? s.memory.web_episodes : 0) +
+            " · векторы: " + (s.memory.vectors ? "есть" : "нет")
+          : "MEMORY_* в settings.ini") +
+      card("Аптайм", "<b>" + fmtUptime(s.uptime_sec) + "</b>", "Telegram-бот работает параллельно") +
+      '<div class="panel card" style="grid-column:1/-1"><h3 class="lbl">Доступ</h3>' +
+        '<div class="s">Панель отвечает только этому компьютеру (127.0.0.1). Те же возможности есть в Telegram: ' +
+        "<code>/analyze BTC</code>, <code>/chart</code>, <code>/agent</code>, <code>/browser</code>, " +
+        "<code>/download</code>, <code>/compact</code>, <code>/hands</code>.</div></div>";
+  } catch (e) {
+    setChip("dotBrain", "chipBrain", "bad", "бот не отвечает");
+    $("orb").classList.add("bad");
+  }
+}
 function fmtUptime(s) {
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
   return h ? h + " ч " + m + " мин" : m + " мин";
 }
-function setChip(dot, chip, state, text) {
-  $(dot).className = "dot " + state;
-  $(chip).textContent = text;
-}
-function card(title, value, sub) {
-  return '<div class="card"><h3>' + title + '</h3><div class="v">' + value + '</div>' +
-         (sub ? '<div class="s">' + sub + "</div>" : "") + "</div>";
-}
-function updateStateBar(a) {
-  const bar = $("stateBar");
-  if (!a) return;
-  const gen = a.phase === "generating";
-  bar.classList.toggle("gen", gen);
-  let label = gen ? "генерация: " + (a.label || "…") : "простаивает";
-  // Цикл инструментов идёт ходами, а не потоком: показываем номер хода, иначе индикатор
-  // выглядит замершим ровно там, где работы больше всего.
-  if (gen && a.turns > 0) label += " · ход " + a.turns;
-  $("stateLabel").textContent = label;
-  if (gen && a.live_tok_per_sec != null) {
-    // per_turn = цифры обновляются раз в ход модели, а не раз в токен. Подписано честно,
-    // потому что «замершая» цифра без объяснения читается как поломка.
-    $("stateLive").innerHTML = "<b>" + a.live_tok_per_sec + "</b> ток/с" +
-      (a.per_turn ? " (за ход)" : "") + " · <b>" + (a.live_tokens || 0) + "</b> ток · " +
-      (a.elapsed_sec || 0) + " с";
-  } else {
-    $("stateLive").textContent = gen ? "запуск…" : "";
-  }
-  const L = a.last;
-  if (L && L.has) {
-    $("stateLast").innerHTML = "последний" + (L.label ? " (" + L.label + ")" : "") +
-      ": <b>" + L.gen_tok_s + "</b> ток/с генерация · <b>" + L.prompt_tok_s +
-      "</b> ток/с промпт · " + L.gen_tokens + " ток за " + (L.total_ms / 1000).toFixed(1) + " с";
-  }
+
+/* ═══ восстановление переписки ═══
+   История живёт на сервере, и модель её помнит; до этого F5 стирал её только с экрана —
+   со стороны это выглядело как «бот всё забыл». */
+async function restoreHistory() {
+  try {
+    const j = await (await fetch("/api/history")).json();
+    const msgs = j.messages || [];
+    if (msgs.length) {
+      flow.appendChild(el("div", "lbl", "Продолжение диалога · " + msgs.length + " реплик из памяти движка"));
+      for (const m of msgs) {
+        if (m.role === "user") said(m.text, null);
+        else { const body = reply(renderMd(m.text)); addCopy(body.parentNode, () => m.text); }
+      }
+    } else {
+      reply(renderMd(
+        "Панель на связи. Умею то же, что и в Telegram: искать, читать сайты, работать в терминале и с файлами, " +
+        "видеть экран, разбирать **видео**, **PDF** и картинки, скачивать ролики и считать разбор инструмента " +
+        "двумя методиками сразу.\n\n" +
+        "- напиши задачу словами — инструменты подберу сам\n" +
+        "- перетащи файл в окно или нажми скрепку\n" +
+        "- зажми микрофон и скажи голосом\n" +
+        "- вкладка **Разбор** — уровни, ATR и сценарии лонга и шорта по дневкам"));
+    }
+    if (j.context) paintContext(j.context);
+    if (j.pending) {
+      const host = el("div", "reply");
+      host.appendChild(el("span", "lbl", "Ждёт ответа"));
+      flow.appendChild(host);
+      renderConfirm(host, j.pending);
+    }
+    scrollDown(true);
+  } catch (_) {}
 }
 
-// paintContext рисует окно контекста: занято/всего + полоса. Занятое — это prompt_n
-// последнего запроса, его считает llama.cpp; оценка по символам сюда не подмешивается.
-function paintContext(c) {
-  const meter = $("ctxMeter");
-  if (!c || !c.total) { $("ctxText").textContent = "контекст: —"; return; }
-  const used = c.used || 0;
-  const pct = c.pct != null ? c.pct : (used ? Math.round(used * 100 / c.total) : 0);
-  $("ctxFill").style.width = Math.min(100, pct) + "%";
-  meter.classList.toggle("warn", pct >= 60 && pct < 85);
-  meter.classList.toggle("hot", pct >= 85);
-  const k = n => n >= 1000 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : String(n);
-  $("ctxText").innerHTML = "контекст <b>" + k(used) + "</b> / " + k(c.total) + " · " + pct + "%";
-  meter.title = "Окно контекста модели: занято " + used + " из " + c.total + " токенов" +
-    (c.history_msgs ? "\nИстория чата: " + c.history_msgs + " реплик ≈ " + c.history_tokens +
-      " токенов (сжать: кнопка 🗜 или /compact)" : "") +
-    "\nАвтосжатие включается на " + (c.auto_compact_at || "?") + " репликах.";
-}
-async function refreshStatus() {
-  try {
-    const r = await fetch("/api/status");
-    const s = await r.json();
-    updateStateBar(s.activity);
-    paintContext(s.context);
-    setChip("dotBrain", "chipBrain", s.brain_ready ? "ok" : "warn", s.brain_ready ? "мозг готов" : "мозг грузится");
-    setChip("dotChrome", "chipChrome", s.chrome_tabs >= 0 ? "ok" : "bad",
-      s.chrome_tabs >= 0 ? "Chrome: " + s.chrome_tabs + " вкл." : "Chrome недоступен");
-    const vLabel = s.voice_backend || "голос";
-    setChip("dotWhisper", "chipWhisper",
-      s.whisper === "ready" ? "ok" : s.whisper === "down" ? "bad" : "warn",
-      s.whisper === "ready" ? ("голос · " + vLabel) : s.whisper === "down" ? (vLabel + " недоступен") : "голос выключен");
-    $("cards").innerHTML =
-      card("🧠 Мозг (LLM)", s.brain_ready ? "Готов" : "Грузится…", (s.model || "модель не задана") + " · порт " + s.brain_port) +
-      card("🌐 Chrome (CDP)", s.chrome_tabs >= 0 ? s.chrome_tabs + " вкладок" : "Недоступен",
-           s.chrome_tabs >= 0 ? "порт 9222" : "запусти Chrome с --remote-debugging-port=9222") +
-      card("🎙 Голос (STT)", s.whisper === "ready" ? ("Готов · " + (s.voice_backend || "")) : s.whisper === "down" ? "Не отвечает" : "Выключен",
-           s.whisper === "off"
-             ? "TypeWhisper API (порт 8978) или WHISPER_* в settings.ini"
-             : ("TypeWhisper: " + (s.typewhisper ? "ok" : "—") + " · whisper.cpp: " + (s.whisper_cpp ? "ok" : "—"))) +
-      card("💬 Диалоги", s.chats + " чатов", "веб-чат: " + s.web_turns + " реплик") +
-      card("🪟 Контекст",
-           s.context && s.context.total
-             ? ((s.context.used || 0) + " / " + s.context.total + " ток."
-                + (s.context.pct != null ? " · " + s.context.pct + "%" : ""))
-             : "неизвестен",
-           s.context
-             ? ("история: " + (s.context.history_msgs || 0) + " реплик ≈ " +
-                (s.context.history_tokens || 0) + " ток. · автосжатие на " +
-                (s.context.auto_compact_at || "?") + " · /compact сжимает вручную")
-             : "модель ещё грузится") +
-      card("🖐 Руки", s.hands ? (s.hands.mode === "full" ? "Длинные" : "Короткие") : "—",
-           s.hands && s.hands.mode === "full"
-             ? "весь ПК без подтверждений; ядерное переспрашивается один раз"
-             : "опасное спрашивает подтверждение; ядерное запрещено") +
-      card("⏱ Аптайм", fmtUptime(s.uptime_sec), "бот запущен и работает") +
-      '<div class="hint">Интерфейс доступен только с этого компьютера (127.0.0.1). Телеграм-бот работает параллельно: ' +
-      "<code>/analyze BTC</code>, <code>/chart</code>, <code>/agent</code>, <code>/browser</code>.</div>";
-  } catch (e) {
-    setChip("dotBrain", "chipBrain", "bad", "бот не отвечает");
-  }
-}
+restoreHistory();
 refreshStatus();
-// 1.5s keeps the live tok/s counter smooth during generation without hammering the backend.
+loadArtifacts(true);
+// 1.5 с держит счётчик ток/с живым, не долбя движок.
 setInterval(refreshStatus, 1500);
 input.focus();
 </script>

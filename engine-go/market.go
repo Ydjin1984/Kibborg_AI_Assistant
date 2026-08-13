@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,8 +28,10 @@ type candle struct {
 	high, low, close, volume float64
 }
 
-// fetchKlines pulls up to limit candles for a Binance spot symbol/interval.
-func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
+// fetchKlineRows pulls raw klines. Both the indicator path (fetchKlines) and the Gerchik
+// daily path (fetchDailyBars) go through it: the second one needs open price and open time,
+// which the indicator candle deliberately drops.
+func fetchKlineRows(symbol, interval string, limit int) ([][]any, error) {
 	u := fmt.Sprintf("https://api.binance.com/api/v3/klines?symbol=%s&interval=%s&limit=%d",
 		symbol, interval, limit)
 	resp, err := marketHTTP.Get(u)
@@ -52,6 +55,18 @@ func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("binance вернул не-JSON: %w", err)
 	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("binance вернул пустые данные по %s %s", symbol, interval)
+	}
+	return rows, nil
+}
+
+// fetchKlines pulls up to limit candles for a Binance spot symbol/interval.
+func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
+	rows, err := fetchKlineRows(symbol, interval, limit)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]candle, 0, len(rows))
 	for _, k := range rows {
 		if len(k) < 6 {
@@ -64,9 +79,6 @@ func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
 			volume: anyToF(k[5]),
 		})
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("binance вернул пустые данные по %s %s", symbol, interval)
-	}
 	// Binance returns the still-forming current candle as the last element. Drop it so every
 	// indicator (RSI/ATR/MACD/trend/volume/change_pct) is computed only from CLOSED candles.
 	// Otherwise volume≈0 early in a candle silently disables the panic/volume checks, and two
@@ -75,6 +87,37 @@ func fetchKlines(symbol, interval string, limit int) ([]candle, error) {
 		out = out[:len(out)-1]
 	}
 	return out, nil
+}
+
+// gerchikDailyLimit — сколько дневных свечей тянем под методику: 180 дней истории (§2.1)
+// плюс запас на EMA-200 и текущий незакрытый день.
+const gerchikDailyLimit = 220
+
+// fetchDailyBars returns CLOSED daily bars plus the still-forming current day. Метод Герчика
+// живёт на дневках: уровни и ATR считаются по закрытым дням, а правило 75% — по открытию
+// СЕГОДНЯШНЕГО дня, поэтому текущая свеча не выбрасывается, а возвращается отдельно.
+func fetchDailyBars(symbol string) ([]trading.Bar, trading.Bar, error) {
+	rows, err := fetchKlineRows(symbol, "1d", gerchikDailyLimit)
+	if err != nil {
+		return nil, trading.Bar{}, err
+	}
+	bars := make([]trading.Bar, 0, len(rows))
+	for _, k := range rows {
+		if len(k) < 5 {
+			continue
+		}
+		bars = append(bars, trading.Bar{
+			Time:  time.UnixMilli(int64(anyToF(k[0]))).UTC(),
+			Open:  anyToF(k[1]),
+			High:  anyToF(k[2]),
+			Low:   anyToF(k[3]),
+			Close: anyToF(k[4]),
+		})
+	}
+	if len(bars) < 2 {
+		return nil, trading.Bar{}, fmt.Errorf("binance вернул мало дневных свечей по %s", symbol)
+	}
+	return bars[:len(bars)-1], bars[len(bars)-1], nil
 }
 
 func anyToF(v any) float64 {
@@ -170,6 +213,19 @@ func analyzeTicker(symbol string) (trading.DecisionReport, error) {
 	extra := fetchFuturesContext(symbol)
 	report := trading.AnalyzeSymbol(symbol, "spot", false, timeframes, extra,
 		[]string{"regime_classifier", "scoring"})
+
+	// Разбор по Герчику — вторая, независимая точка зрения на тот же инструмент: дневные
+	// уровни, ATR по методике курса и готовый сценарий со стопом и целью. Считается отдельно
+	// от скоринга и НЕ влияет на его вердикт: две методики должны спорить открыто, а не
+	// смешиваться в одно усреднённое число. Дневки не пришли — разбор идёт без этого блока.
+	if closed, today, derr := fetchDailyBars(symbol); derr == nil {
+		if report.Meta == nil {
+			report.Meta = map[string]any{}
+		}
+		report.Meta["gerchik"] = trading.AnalyzeGerchik(symbol, closed, today, time.Now().UTC())
+	} else {
+		log.Printf("[MARKET] дневные свечи по %s не получены: %v", symbol, derr)
+	}
 	return report, nil
 }
 
@@ -183,6 +239,14 @@ const narrateSystemPrompt = `Ты — опытный трейдинг-анали
 - о чём говорят скор и вероятность (сильный сигнал или слабый);
 - стоит ли рассматривать вход в этом направлении и почему;
 - какие риски и на что обратить внимание.
+
+В разборе может быть блок «Разбор по Герчику (D1)» — это ВТОРАЯ, независимая методика: дневные уровни, ATR как High−Low трёх нормальных дней, и ДВА сценария — ЛОНГ и ШОРТ, каждый от своего уровня. Объясни оба:
+- что за уровень держит каждую сторону и почему он сильный (касания, зеркальность, слом тренда, ЛП, круглая цифра);
+- какой сценарий ближе к исполнению и что должно произойти, чтобы он сработал;
+- у каждого сценария есть статус: ✅ вход по алгоритму, ⏳ заготовка (цена ещё не у уровня), 🚫 запрещён. Заготовку НЕЛЬЗЯ подавать как сигнал ко входу;
+- какая модель распознана (ЛП 1/2/3+ барами, отбой БСУ-БПУ, пробой) и на каком расстоянии стоп и цели;
+- ЗАПРЕТЫ методики («методика запрещает вход») — это не мелкий шрифт, а вывод: если они есть, сделки по Герчику НЕТ, как бы хорошо ни выглядел скор. Не смягчай их и не предлагай «зайти половиной объёма».
+Если две методики расходятся (скоринг говорит long, Герчик запрещает вход), так и скажи — расхождение это факт, а не повод усреднить.
 
 ЖЁСТКОЕ ПРАВИЛО: нельзя выдумывать НОВЫЕ числа — цены, уровни входа/стопа/тейка, проценты, которых нет в разборе. Используй только те значения, что уже приведены. Если данных для уверенного вывода мало — прямо скажи об этом.
 
@@ -283,6 +347,10 @@ func renderReport(r trading.DecisionReport) string {
 			}
 			b.WriteString("- 🟡 " + msg + "\n")
 		}
+	}
+
+	if g, ok := r.Meta["gerchik"].(trading.GerchikReport); ok {
+		renderGerchik(&b, g)
 	}
 
 	if regime, ok := r.Meta["regime"].(trading.RegimeResult); ok && len(regime.Reasons) > 0 {
