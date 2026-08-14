@@ -325,6 +325,44 @@
   #lightbox.on{display:grid}
   #lightbox img{max-width:100%;max-height:100%;border-radius:14px;border:1px solid var(--edge);box-shadow:var(--shadow)}
 
+  /* ── модели / железо ── */
+  .hwgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin-bottom:16px}
+  .hwcard{padding:14px 16px}
+  .hwcard .who{font-size:11px;color:var(--faint);letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px}
+  .hwcard .num{font-size:22px;font-weight:300;letter-spacing:-.02em;font-family:"Segoe UI Variable Display","Segoe UI",sans-serif}
+  .hwcard .num b{font-weight:600}
+  .hwcard .sub{font-size:12px;color:var(--dim);margin-top:5px;line-height:1.45;font-weight:300}
+  .modbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .modbar .field{flex:1;min-width:200px}
+  .modbar .field input{width:100%}
+  .modlist{display:flex;flex-direction:column;gap:10px;padding-bottom:18px}
+  .mod{padding:14px 16px}
+  .mod .mh{display:flex;align-items:flex-start;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+  .mod .mh h3{font-size:15px;font-weight:500;letter-spacing:-.01em;flex:1;min-width:180px}
+  .mod .mh .pub{font-size:12px;color:var(--dim);font-weight:300}
+  .caps{display:flex;gap:6px;flex-wrap:wrap}
+  .cap{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--edge);
+    border-radius:999px;padding:2px 8px;color:var(--faint)}
+  .cap.on{color:var(--jade2);border-color:rgba(111,191,168,.35);background:rgba(111,191,168,.08)}
+  .mfile{display:grid;grid-template-columns:88px 1fr auto auto;gap:10px;align-items:center;
+    padding:8px 0;border-top:1px solid rgba(255,255,255,.045);font-size:13px}
+  .mfile:first-of-type{border-top:none}
+  .mfile .q{font-family:Consolas,monospace;font-weight:600;font-size:12.5px}
+  .mfile .sz{color:var(--dim);font-family:Consolas,monospace;font-size:12px}
+  .fit{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;border-radius:999px;
+    padding:3px 9px;border:1px solid}
+  .fit.gpu{color:var(--jade2);border-color:rgba(111,191,168,.4);background:rgba(111,191,168,.08)}
+  .fit.hybrid{color:var(--sand);border-color:rgba(216,179,122,.4);background:rgba(216,179,122,.07)}
+  .fit.cpu{color:var(--sky);border-color:rgba(127,169,201,.4);background:rgba(127,169,201,.08)}
+  .fit.no{color:var(--rose);border-color:rgba(208,122,114,.4);background:rgba(208,122,114,.07)}
+  .dlbar{height:3px;background:rgba(255,255,255,.06);border-radius:99px;margin-top:8px;overflow:hidden}
+  .dlbar i{display:block;height:100%;background:var(--jade);width:0;transition:width .25s}
+  .pendnote{font-size:12.5px;color:var(--sand);margin:0 0 12px;padding:8px 12px;border:1px solid rgba(216,179,122,.28);
+    border-radius:10px;background:rgba(216,179,122,.06)}
+  select.pick{background:var(--glass);border:1px solid var(--edge);border-radius:999px;padding:6px 12px;
+    color:var(--text);font:inherit;font-size:12.5px}
+  select.pick option{background:#0B0F15}
+
   @media (max-width:1120px){
     .shell{grid-template-columns:minmax(0,1fr)}
     aside{display:none}
@@ -380,6 +418,10 @@
     <path d="M6 3.5h7l5 5v12H6z"/><path d="M13 3.5v5h5M9 13h6M9 16.5h6"/></symbol>
   <symbol id="i-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M4 10v4M8 7v10M12 4.5v15M16 8v8M20 10.5v3"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="7" y="7" width="10" height="10" rx="1.6"/>
+    <path d="M9 3.4v3.6M12 3.4v3.6M15 3.4v3.6M9 17v3.6M12 17v3.6M15 17v3.6M3.4 9h3.6M3.4 12h3.6M3.4 15h3.6M17 9h3.6M17 12h3.6M17 15h3.6"/>
+  </symbol>
 </svg>
 
 <header>
@@ -411,6 +453,7 @@
         <button type="button" data-tab="agent"><svg class="icon"><use href="#i-agent"></use></svg>Агент</button>
         <button type="button" data-tab="video"><svg class="icon"><use href="#i-video"></use></svg>Видео</button>
         <button type="button" data-tab="files"><svg class="icon"><use href="#i-files"></use></svg>Файлы</button>
+        <button type="button" data-tab="models"><svg class="icon"><use href="#i-chip"></use></svg>Модели</button>
         <button type="button" data-tab="status"><svg class="icon"><use href="#i-pulse"></use></svg>Статус</button>
       </nav>
       <div class="taskline" id="taskline"></div>
@@ -545,6 +588,39 @@
       </div>
     </section>
 
+    <!-- МОДЕЛИ -->
+    <section class="tab" id="tab-models">
+      <div class="scroll">
+        <div class="arow">
+          <button class="go" id="hwRun" type="button">Тест железа</button>
+          <span class="lbl" id="hwStamp" style="margin-left:4px"></span>
+        </div>
+        <div class="hwgrid" id="hwGrid">
+          <div class="panel hwcard"><div class="who">процессор</div>
+            <div class="num">—</div><div class="sub">нажми «Тест железа»</div></div>
+        </div>
+        <div class="pendnote" id="modelPend" style="display:none"></div>
+        <div class="modbar">
+          <div class="field wide"><svg class="icon" style="color:var(--faint)"><use href="#i-chip"></use></svg>
+            <input id="modQ" placeholder="Поиск: qwen, llama, gemma, unsloth…"></div>
+          <select class="pick" id="modPub" title="Производитель">
+            <option value="">все авторы</option>
+          </select>
+          <button class="qb" type="button" data-cap="vision">зрение</button>
+          <button class="qb" type="button" data-cap="tools">инструменты</button>
+          <button class="qb" type="button" data-cap="reasoning">размышления</button>
+          <button class="qb" type="button" data-fit="gpu">GPU</button>
+          <button class="qb" type="button" data-fit="hybrid">гибрид</button>
+          <button class="qb" type="button" data-fit="cpu">CPU</button>
+          <button class="go" id="modAuto" type="button" title="Только те, что точно лягут в VRAM целиком">Авто GPU</button>
+          <button class="qb" id="modSearch" type="button">Искать</button>
+        </div>
+        <div class="lbl" id="modMeta" style="margin-bottom:10px"></div>
+        <div class="modlist" id="modLocal"></div>
+        <div class="modlist" id="modList"></div>
+      </div>
+    </section>
+
     <!-- СТАТУС -->
     <section class="tab" id="tab-status">
       <div class="scroll"><div class="cards" id="cards"></div></div>
@@ -626,6 +702,7 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   b.classList.add("on");
   $("tab-" + b.dataset.tab).classList.add("on");
   if (b.dataset.tab === "files") loadArtifacts();
+  if (b.dataset.tab === "models") { if (!hwLoaded) probeHardware(true); }
 });
 
 /* ═══ тосты ═══ */
@@ -1335,8 +1412,11 @@ function setupCard(title, s) {
   const row = (k, v, x) => '<div class="lv"><span class="k">' + k + '</span><span class="v">' + v +
     '</span><span class="x">' + esc(x || "") + "</span></div>";
   if (!s || !s.entry) {
-    card.innerHTML = '<div class="sh"><b>' + title + '</b><span class="badge no">нет сценария</span></div>' +
-      '<div class="kv"><span>методика не собрала модель на этой стороне</span></div>';
+    const bl = (s && s.blocks && s.blocks.length)
+      ? '<div class="blocks"><span class="lbl">Запреты методики</span><ul>' +
+        s.blocks.map(b => "<li><span>" + esc(b) + "</span></li>").join("") + "</ul></div>"
+      : '<div class="kv"><span>методика не собрала модель на этой стороне</span></div>';
+    card.innerHTML = '<div class="sh"><b>' + title + '</b><span class="badge no">нет сценария</span></div>' + bl;
     return card;
   }
   const state = s.ready ? ["go", "вход по алгоритму"] : s.pending ? ["wait", "заготовка"] : ["no", "запрещён"];
@@ -1681,7 +1761,8 @@ async function refreshStatus() {
       '<div class="panel card" style="grid-column:1/-1"><h3 class="lbl">Доступ</h3>' +
         '<div class="s">Панель отвечает только этому компьютеру (127.0.0.1). Те же возможности есть в Telegram: ' +
         "<code>/analyze BTC</code>, <code>/chart</code>, <code>/agent</code>, <code>/browser</code>, " +
-        "<code>/download</code>, <code>/compact</code>, <code>/hands</code>.</div></div>";
+        "<code>/download</code>, <code>/compact</code>, <code>/hands</code>, " +
+        "<code>/hw</code>, <code>/models</code>.</div></div>";
   } catch (e) {
     setChip("dotBrain", "chipBrain", "bad", "бот не отвечает");
     $("orb").classList.add("bad");
@@ -1713,7 +1794,8 @@ async function restoreHistory() {
         "- напиши задачу словами — инструменты подберу сам\n" +
         "- перетащи файл в окно или нажми скрепку\n" +
         "- зажми микрофон и скажи голосом\n" +
-        "- вкладка **Разбор** — уровни, ATR и сценарии лонга и шорта по дневкам"));
+        "- вкладка **Разбор** — уровни, ATR и сценарии лонга и шорта по дневкам\n" +
+        "- вкладка **Модели** — тест железа и каталог GGUF"));
     }
     if (j.context) paintContext(j.context);
     if (j.pending) {
@@ -1724,6 +1806,219 @@ async function restoreHistory() {
     }
     scrollDown(true);
   } catch (_) {}
+}
+
+/* ═══ модели / железо ═══ */
+let hwLoaded = false, hwTimer = null;
+const modState = { vision: false, tools: false, reasoning: false, fit: "" };
+
+function fmtGB(n) {
+  if (n == null || isNaN(n)) return "—";
+  return (n >= 10 ? n.toFixed(0) : n.toFixed(1)) + " ГБ";
+}
+function fitClass(k) { return k === "gpu" || k === "hybrid" || k === "cpu" ? k : "no"; }
+
+async function probeHardware(fresh) {
+  const grid = $("hwGrid");
+  if (fresh) {
+    $("hwRun").disabled = true;
+    $("hwStamp").textContent = "снимаю…";
+  }
+  try {
+    const hw = await (await fetch("/api/hardware" + (fresh ? "?fresh=1" : ""))).json();
+    hwLoaded = true;
+    paintHardware(hw);
+    if (fresh) loadModels();
+  } catch (e) {
+    grid.innerHTML = '<div class="panel hwcard"><div class="who">ошибка</div><div class="sub">' +
+      esc(e.message) + "</div></div>";
+  }
+  $("hwRun").disabled = false;
+}
+function paintHardware(hw) {
+  const s = hw.summary || {};
+  const cards = [];
+  const cpuName = (hw.cpu && hw.cpu[0] && hw.cpu[0].name) ? hw.cpu[0].name : "CPU";
+  cards.push(hwCard("процессор", "<b>" + (s.sockets || 0) + "</b> сокет · <b>" +
+    (s.cores || 0) + "</b> ядер · <b>" + (s.threads || 0) + "</b> потоков", cpuName));
+  cards.push(hwCard("память", "<b>" + fmtGB(s.ram_gb) + "</b>",
+    "свободно " + fmtGB(s.ram_free_gb)));
+  if (!hw.gpus || !hw.gpus.length) {
+    cards.push(hwCard("видеокарты", "<b>нет</b>", "nvidia-smi не ответил"));
+  } else {
+    (hw.gpus || []).forEach(g => {
+      cards.push(hwCard("GPU " + g.index, "<b>" + esc(g.name || "GPU") + "</b>",
+        fmtGB(g.vram_total_gb) + " VRAM · свободно " + fmtGB(g.vram_free_gb) +
+        (g.cuda_cores ? " · " + g.cuda_cores.toLocaleString("ru-RU") + " CUDA" : "") +
+        (g.util_gpu != null ? " · " + g.util_gpu + "%" : "")));
+    });
+    cards.push(hwCard("сумма GPU", "<b>" + (s.gpu_count || 0) + "</b> карт · <b>" +
+      fmtGB(s.vram_gb) + "</b> VRAM",
+      (s.cuda_cores ? s.cuda_cores.toLocaleString("ru-RU") + " CUDA-ядер" : "ядра по справочнику")));
+  }
+  $("hwGrid").innerHTML = cards.join("");
+  $("hwStamp").textContent = hw.at ? new Date(hw.at).toLocaleTimeString("ru-RU") : "";
+}
+function hwCard(who, num, sub) {
+  return '<div class="panel hwcard"><div class="who">' + who + '</div><div class="num">' +
+    num + '</div><div class="sub">' + sub + "</div></div>";
+}
+
+document.querySelectorAll("#tab-models .qb[data-cap]").forEach(b => b.onclick = () => {
+  const k = b.dataset.cap;
+  modState[k] = !modState[k];
+  b.classList.toggle("on", modState[k]);
+});
+document.querySelectorAll("#tab-models .qb[data-fit]").forEach(b => b.onclick = () => {
+  const v = b.dataset.fit;
+  modState.fit = modState.fit === v ? "" : v;
+  document.querySelectorAll("#tab-models .qb[data-fit]").forEach(x =>
+    x.classList.toggle("on", x.dataset.fit === modState.fit));
+});
+$("modAuto").onclick = () => {
+  modState.fit = "gpu";
+  document.querySelectorAll("#tab-models .qb[data-fit]").forEach(x =>
+    x.classList.toggle("on", x.dataset.fit === "gpu"));
+  loadModels();
+};
+$("modSearch").onclick = () => loadModels();
+$("modQ").addEventListener("keydown", e => { if (e.key === "Enter") loadModels(); });
+$("modPub").onchange = () => loadModels();
+$("hwRun").onclick = () => probeHardware(true);
+
+async function loadModels() {
+  $("modMeta").textContent = "тянут каталог Hugging Face…";
+  const p = new URLSearchParams();
+  if ($("modQ").value.trim()) p.set("q", $("modQ").value.trim());
+  if ($("modPub").value) p.set("publisher", $("modPub").value);
+  if (modState.fit) p.set("fit", modState.fit);
+  if (modState.vision) p.set("vision", "1");
+  if (modState.tools) p.set("tools", "1");
+  if (modState.reasoning) p.set("reasoning", "1");
+  try {
+    const j = await (await fetch("/api/models?" + p.toString())).json();
+    if (j.hardware) paintHardware(j.hardware);
+    paintPend(j);
+    fillPublishers(j.publishers || []);
+    $("modLocal").innerHTML = (j.local && j.local.length)
+      ? '<div class="lbl" style="margin:4px 0 8px">на диске</div>' + j.local.map(paintMod).join("")
+      : "";
+    if (j.error) {
+      $("modList").innerHTML = '<div class="empty">⚠ ' + esc(j.error) + "</div>";
+      $("modMeta").textContent = "каталог недоступен";
+      return;
+    }
+    const list = j.models || [];
+    $("modMeta").textContent = list.length
+      ? list.length + " семейств · Hugging Face GGUF"
+      : "ничего не нашлось — смени запрос или сними фильтр";
+    $("modList").innerHTML = (list.length ? '<div class="lbl" style="margin:10px 0 8px">каталог</div>' : "") +
+      list.map(paintMod).join("");
+    if (j.download && j.download.status === "running") watchDownload();
+  } catch (e) {
+    $("modMeta").textContent = "";
+    $("modList").innerHTML = '<div class="empty">⚠ ' + esc(e.message) + "</div>";
+  }
+}
+function fillPublishers(list) {
+  const sel = $("modPub"), cur = sel.value;
+  const keep = new Set(list.concat([cur].filter(Boolean)));
+  sel.innerHTML = '<option value="">все авторы</option>' +
+    [...keep].filter(Boolean).sort().map(p =>
+      '<option value="' + esc(p) + '"' + (p === cur ? " selected" : "") + ">" + esc(p) + "</option>").join("");
+}
+function paintPend(j) {
+  const eln = $("modelPend");
+  if (j.running && j.assigned && j.running !== j.assigned) {
+    eln.style.display = "block";
+    eln.textContent = "В settings.ini уже «" + j.assigned + "», в VRAM ещё «" + j.running +
+      "». Мозг не перезапускал — Stop → Start, когда будешь готов.";
+  } else eln.style.display = "none";
+}
+function paintMod(m) {
+  const caps = [];
+  if (m.vision) caps.push("зрение");
+  if (m.tools) caps.push("инструменты");
+  if (m.reasoning) caps.push("размышления");
+  const files = (m.files || []).map(f => {
+    if (f.kind === "mmproj") {
+      return '<div class="mfile"><span class="q">mmproj</span><span class="sz">' +
+        fmtGB(f.size_gb) + '</span><span class="fit gpu">зрение</span><span></span></div>';
+    }
+    const kind = (f.fit && f.fit.kind) || "no";
+    const btn = f.local
+      ? '<button class="qb" type="button" data-assign="' + esc(f.local_path || "") + '">' +
+        (f.active ? "назначена" : "назначить") + "</button>"
+      : '<button class="qb" type="button" data-dl-repo="' + esc(m.id) + '" data-dl-file="' +
+        esc(f.path || f.name) + '">скачать</button>';
+    return '<div class="mfile"><span class="q">' + esc(f.quant || f.name) + '</span><span class="sz">' +
+      fmtGB(f.size_gb) + (f.local ? " · на диске" : "") + '</span><span class="fit ' + fitClass(kind) +
+      '" title="' + esc((f.fit && f.fit.note) || "") + '">' + esc((f.fit && f.fit.label) || kind) +
+      "</span>" + btn + "</div>";
+  }).join("");
+  return '<div class="panel mod"><div class="mh"><div><h3>' + esc(m.name) +
+    '</h3><div class="pub">' + esc(m.publisher || "") +
+    (m.params ? " · " + esc(m.params) : "") +
+    (m.downloads ? " · " + m.downloads.toLocaleString("ru-RU") + " загрузок" : "") +
+    (m.url ? ' · <a href="' + esc(m.url) + '" target="_blank" rel="noopener">карточка</a>' : "") +
+    '</div></div><div class="caps">' +
+    caps.map(c => '<span class="cap on">' + c + "</span>").join("") +
+    "</div></div>" + files + "</div>";
+}
+
+$("modList").addEventListener("click", onModClick);
+$("modLocal").addEventListener("click", onModClick);
+async function onModClick(e) {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.assign) {
+    b.disabled = true;
+    try {
+      const j = await (await fetch("/api/models/assign", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: b.dataset.assign })
+      })).json();
+      toast(j.error || j.text || "назначено", j.error ? "bad" : "");
+      loadModels();
+    } catch (err) { toast(err.message, "bad"); }
+    b.disabled = false;
+    return;
+  }
+  if (b.dataset.dlRepo) {
+    b.disabled = true;
+    try {
+      const j = await (await fetch("/api/models/download", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo: b.dataset.dlRepo, file: b.dataset.dlFile, assign: true, mmproj: true })
+      })).json();
+      if (j.error) toast(j.error, "bad");
+      else toast("скачиваю " + b.dataset.dlFile);
+      watchDownload();
+    } catch (err) { toast(err.message, "bad"); }
+    b.disabled = false;
+  }
+}
+
+function watchDownload() {
+  if (hwTimer) return;
+  hwTimer = setInterval(async () => {
+    try {
+      const j = await (await fetch("/api/models/download")).json();
+      const meta = $("modMeta");
+      if (j.status === "running") {
+        const pct = j.pct != null ? j.pct.toFixed(0) : "?";
+        meta.textContent = "скачиваю " + (j.file || "") + " · " + pct + "% · " +
+          fmtGB((j.done || 0) / (1024*1024*1024)) + " из " + fmtGB((j.total || 0) / (1024*1024*1024));
+      } else {
+        clearInterval(hwTimer); hwTimer = null;
+        if (j.status === "done") {
+          toast(j.assigned ? "скачано и прописано в settings.ini" : "скачано");
+          loadModels();
+        } else if (j.status === "error") toast(j.error || "ошибка скачивания", "bad");
+        else if (j.status === "canceled") toast("скачивание остановлено", "warn");
+      }
+    } catch (_) {}
+  }, 800);
 }
 
 restoreHistory();

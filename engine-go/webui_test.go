@@ -236,6 +236,45 @@ func TestWebIconsEmbedded(t *testing.T) {
 	}
 }
 
+func TestModelsTabAndHardwareAPI(t *testing.T) {
+	html := string(webIndexHTML)
+	for _, want := range []string{`data-tab="models"`, `id="tab-models"`, `id="hwRun"`, `id="modList"`, "/api/hardware", "/api/models"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("в панели нет %q", want)
+		}
+	}
+	srv := webTestServer(t)
+	resp, err := http.Get(srv.URL + "/api/hardware")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET /api/hardware = %d", resp.StatusCode)
+	}
+	var hw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&hw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"cpu", "ram", "gpus", "summary"} {
+		if _, ok := hw[key]; !ok {
+			t.Errorf("hardware нет %q: %v", key, hw)
+		}
+	}
+}
+
+func TestRouteWebMessageHardwareAndAnalyze(t *testing.T) {
+	if is, _ := parseCommand("/hw", hardwareCommands); !is {
+		t.Fatal("/hw должен разбираться")
+	}
+	if is, arg := parseCommand("/models qwen gpu", modelsCommands); !is || arg == "" {
+		t.Fatal("/models должен оставлять аргумент")
+	}
+	if is, arg := parseCommand("/analyze BTC", analyzeCommands); !is || !strings.EqualFold(arg, "BTC") {
+		t.Fatal("/analyze в веб-чате обязан ловиться тем же разбором, что в Telegram")
+	}
+}
+
 func TestWebResetAndChatValidation(t *testing.T) {
 	srv := webTestServer(t)
 	// reset requires POST

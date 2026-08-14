@@ -514,6 +514,8 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 	isScan, scanArg := parseCommand(text, scanCommands)
 	isAudit, _ := parseCommand(text, auditCommands)
 	isCompact, _ := parseCommand(text, compactCommands)
+	isHW, _ := parseCommand(text, hardwareCommands)
+	isModels, modelsArg := parseCommand(text, modelsCommands)
 	switch {
 	case strings.HasPrefix(lower, "/start"), strings.HasPrefix(lower, "/help"):
 		sendTelegramWithMarkup(botAPI, chatID,
@@ -524,6 +526,8 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 				"🎙 Голос: TypeWhisper (HTTP API) → текст → ответ; fallback whisper.cpp. В Web — кнопка 🎙.\n"+
 				"🎬 Видео: пришли ролик (или ссылку) — распознаю речь, посмотрю кадры и отвечу по содержанию. "+
 				"С подписью «найди этот проект на гитхабе» — сразу и найду. Файл на диске: «разбери D:\\видео\\урок.mp4».\n"+
+				"🖥 /hw — тест железа: сокеты, ядра, потоки, RAM, карты, VRAM.\n"+
+				"📦 /models [запрос] — каталог GGUF Hugging Face под твоё железо. Скачать: /models get owner/repo file.gguf\n"+
 				"📊 /analyze <тикер> — детерминированный разбор по данным Binance (режим, скор, тренды). Пример: /analyze BTC\n"+
 				"📈 /chart — торговый разбор графика: отправь команду, затем пришли скриншот или файл графика.\n"+
 				"📐 /size — размер позиции по риску. Пример: /size BTC entry=50000 stop=49000 tp=53000 risk=1.5 lev=10\n"+
@@ -615,6 +619,12 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 		}
 		// A slash command is a HINT to the dispatcher, not a bypass of it (§7).
 		runTelegramAgent(cfg, botAPI, allow, chatID, browserTask)
+		return
+	case isHW:
+		sendTelegramMessage(botAPI, chatID, formatHardwareText(probeHardware(true)))
+		return
+	case isModels:
+		sendTelegramMessage(botAPI, chatID, handleModelsCommand(modelsArg))
 		return
 	case isSize:
 		sendTelegramMessage(botAPI, chatID, handleSizeCommand(cfg, sizeArg))

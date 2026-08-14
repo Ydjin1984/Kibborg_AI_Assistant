@@ -81,6 +81,8 @@ func newWebMux(cfg Config) *http.ServeMux {
 	mux.HandleFunc("/api/history", sameOriginGuard(handleAPIHistory))
 	mux.HandleFunc("/api/artifacts", sameOriginGuard(handleAPIArtifacts))
 	mux.HandleFunc("/api/candles", sameOriginGuard(handleAPICandles))
+	// Каталог моделей и тест железа — вкладка «Модели» + /hw / /models в чате.
+	registerModelRoutes(mux)
 	// Иконки кнопок вшиты в бинарь рядом со страницей.
 	mux.HandleFunc("/icons/", handleAPIIcons)
 	return mux
@@ -245,6 +247,8 @@ func handleAPIStatus(w http.ResponseWriter, cfg Config) {
 		"brain_vision":  ready && brainHasVision(cfg.BrainPort), // true only when mmproj loaded
 		"brain_port":    cfg.BrainPort,
 		"model":         filepathBase(cfg.ModelPath),
+		"running_model": liveBrainModel,
+		"model_pending": liveBrainModel != "" && liveBrainModel != filepathBase(cfg.ModelPath),
 		"whisper":       whisper,
 		"voice_backend": voiceBackendLabel(cfg),
 		"typewhisper":   typeWhisperReady(cfg),
@@ -475,6 +479,23 @@ func routeWebMessage(w http.ResponseWriter, cfg Config, msg, transcript string) 
 	}
 	if is, arg := parseCommand(msg, closeCommands); is {
 		webChatReply(w, handleCloseCommand(arg))
+		return true
+	}
+	if is, _ := parseCommand(msg, hardwareCommands); is {
+		webChatReply(w, formatHardwareText(probeHardware(true)))
+		return true
+	}
+	if is, arg := parseCommand(msg, modelsCommands); is {
+		webChatReply(w, handleModelsCommand(arg))
+		return true
+	}
+	if is, arg := parseCommand(msg, analyzeCommands); is {
+		if strings.TrimSpace(arg) == "" {
+			webChatReply(w, "📊 Укажи тикер: /analyze BTC (или ETH, SOL…).")
+			return true
+		}
+		req, _ := http.NewRequest(http.MethodGet, "/api/analyze?symbol="+url.QueryEscape(arg), nil)
+		handleAPIAnalyze(w, req)
 		return true
 	}
 	// Security & log analysis (deterministic + grounded LLM read) — parity with Telegram.

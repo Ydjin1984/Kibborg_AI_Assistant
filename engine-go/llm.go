@@ -35,6 +35,7 @@ func ensureBrain(cfg Config) {
 		// would NEVER load and every reply would be "модель ещё грузится" with no clue why.
 		// Say so loudly instead of silently giving up.
 		if llamaOnPort(cfg.BrainPort) {
+			liveBrainModel = filepath.Base(cfg.ModelPath)
 			log.Printf("[LLM] brain port :%d already serving llama-server — reusing it", cfg.BrainPort)
 		} else {
 			log.Printf("[LLM] ⚠ порт :%d занят ПОСТОРОННИМ процессом (его /health не похож на llama-server) — "+
@@ -137,8 +138,9 @@ func ensureBrain(cfg Config) {
 		return
 	}
 	registerEngineProc(cmd.Process)
+	liveBrainModel = filepath.Base(cfg.ModelPath)
 	log.Printf("[LLM] launching brain (pid %d): %s :%d — model load may take 1-5 min",
-		cmd.Process.Pid, filepath.Base(cfg.ModelPath), cfg.BrainPort)
+		cmd.Process.Pid, liveBrainModel, cfg.BrainPort)
 }
 
 func orDash(s string) string {
