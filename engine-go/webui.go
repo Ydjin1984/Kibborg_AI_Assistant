@@ -83,6 +83,7 @@ func newWebMux(cfg Config) *http.ServeMux {
 	mux.HandleFunc("/api/candles", sameOriginGuard(handleAPICandles))
 	// Каталог моделей и тест железа — вкладка «Модели» + /hw / /models в чате.
 	registerModelRoutes(mux)
+	registerTTSRoutes(mux)
 	// Иконки кнопок вшиты в бинарь рядом со страницей.
 	mux.HandleFunc("/icons/", handleAPIIcons)
 	return mux
@@ -263,6 +264,7 @@ func handleAPIStatus(w http.ResponseWriter, cfg Config) {
 		// нигде, и «сколько ещё влезет» пользователь мог только угадывать.
 		"context": contextSnapshot(cfg, webChatID),
 		"hands":   map[string]any{"mode": currentHandsMode(), "short": handsModeShort(currentHandsMode())},
+		"tts":     map[string]any{"mode": currentTTSMode(), "short": ttsModeShort(currentTTSMode()), "status": ttsStatus(cfg)},
 	})
 }
 
@@ -487,6 +489,30 @@ func routeWebMessage(w http.ResponseWriter, cfg Config, msg, transcript string) 
 	}
 	if is, arg := parseCommand(msg, modelsCommands); is {
 		webChatReply(w, handleModelsCommand(arg))
+		return true
+	}
+	if is, arg := parseCommand(msg, ttsCommands); is {
+		if strings.TrimSpace(arg) != "" {
+			setTTSMode(arg, "web-chat")
+		}
+		webChatReply(w, ttsModeLabel(currentTTSMode()))
+		return true
+	}
+	if is, arg := parseCommand(msg, speakCommands); is {
+		src := strings.TrimSpace(arg)
+		if src == "" {
+			src = takeLastSpeakable(webChatID)
+		}
+		if src == "" {
+			webChatReply(w, "Нечего озвучивать — сначала нужен ответ, либо `/speak <текст>`.")
+			return true
+		}
+		sf, err := synthesizeSpeech(cfg, src)
+		if err != nil {
+			webChatReply(w, "❌ "+err.Error())
+			return true
+		}
+		webChatReply(w, "🔊 "+sf.Lang+" · [послушать]("+sf.URL+")")
 		return true
 	}
 	if is, arg := parseCommand(msg, analyzeCommands); is {
@@ -833,7 +859,6 @@ func handleWebBrowser(w http.ResponseWriter, cfg Config, task, transcript string
 	// no token stream — statuses are what the user sees, never CoT §6).
 	emit := ndjsonEmitter(w)
 	live.begin("agent")
-	emit(map[string]any{"status": "🧭 Разбираю запрос…"})
 	// Include web chat history + memory so follow-ups work (same as Telegram).
 	actor := actorFor(channelWeb, webChatID, true) // loopback + sameOriginGuard = owner
 	base := withMemory(cfg, webChatID, task, baseMessages(webChatID))
@@ -875,6 +900,14 @@ func emitAgentResult(emit func(map[string]any), userText string, res agentResult
 	}
 	if transcript != "" {
 		payload["transcript"] = transcript // UI shows «🎙 Распознал: …», parity with Telegram
+	}
+	if shouldSpeakReply(webCfg, userText) {
+		if sf, err := synthesizeSpeech(webCfg, text); err != nil {
+			payload["tts_error"] = err.Error()
+		} else {
+			payload["tts_url"] = sf.URL
+			payload["tts_lang"] = sf.Lang
+		}
 	}
 	emit(payload)
 }

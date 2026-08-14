@@ -298,7 +298,7 @@ func TestVideoToolSpecsAndDispatch(t *testing.T) {
 	specs := videoToolSpecs()
 	want := map[string]bool{
 		"analyze_video": false, "transcribe_media": false, "video_frames": false,
-		"media_info": false, "convert_media": false,
+		"media_info": false, "convert_media": false, "speak_text": false,
 	}
 	for _, s := range specs {
 		if _, ok := want[s.Function.Name]; !ok {

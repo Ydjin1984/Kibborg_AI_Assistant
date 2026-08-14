@@ -18,6 +18,7 @@ var videoToolNames = map[string]bool{
 	"transcribe_media": true,
 	"video_frames":     true,
 	"convert_media":    true,
+	"speak_text":       true,
 }
 
 // videoToolSpecs — схемы. Описания короткие сознательно: TestPackSchemaBudget считает ЛЮБУЮ
@@ -51,6 +52,11 @@ func videoToolSpecs() []browser.ToolSpec {
 			objSchema(map[string]any{
 				"path": strSchema(""),
 			}, "path")),
+		spec("speak_text",
+			"Озвучить фразу SuperTonic. Не SAPI и не ffmpeg.",
+			objSchema(map[string]any{
+				"text": strSchema("что сказать"),
+			}, "text")),
 		spec("convert_media",
 			"ffmpeg: конвертация, обрезка, размер, fps, гиф, вытащить звук.",
 			objSchema(map[string]any{
@@ -83,6 +89,8 @@ func dispatchVideoTool(t *Task, cfg Config, name string, args map[string]any) (T
 		return toolMediaInfo(t, cfg, args), true
 	case "convert_media":
 		return toolConvertMedia(t, cfg, args), true
+	case "speak_text":
+		return toolSpeakText(t, cfg, args), true
 	}
 	return ToolResult{}, false
 }

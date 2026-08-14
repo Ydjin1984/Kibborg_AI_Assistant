@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // menuCommands открывают инлайн-панель.
@@ -39,6 +40,8 @@ func botCommandList() []tgBotCommand {
 		{"reset", "♻️ Очистить контекст и долговременную память"},
 		{"agent", "🌐 Задача агенту: терминал, файлы, интернет, Chrome, рабочий стол"},
 		{"analyze", "📊 Разбор тикера по данным Binance"},
+		{"tts", "🔊 Озвучка: всегда / по запросу"},
+		{"speak", "🔈 Озвучить последний ответ"},
 		{"hw", "🖥 Тест железа: CPU, RAM, GPU, VRAM"},
 		{"models", "📦 Каталог GGUF и скачивание модели"},
 		{"chart", "📈 Торговый разбор скриншота графика"},
@@ -84,12 +87,16 @@ const (
 	cbStatus    = "x:status"
 	cbSkills    = "x:skills"
 	cbRefresh   = "x:menu"
+	cbTTSAuto   = "t:auto"
+	cbTTSAsk    = "t:ask"
+	cbSpeak     = "t:say"
 )
 
 // menuKeyboard renders the inline panel for the CURRENT state: активный режим рук помечен
 // галочкой, чтобы кнопка была индикатором, а не только переключателем.
 func menuKeyboard() string {
 	mode := currentHandsMode()
+	tm := currentTTSMode()
 	mark := func(on bool, label string) string {
 		if on {
 			return "✅ " + label
@@ -101,6 +108,13 @@ func menuKeyboard() string {
 			{
 				{"text": mark(mode == handsModeSafe, "🛡 Короткие руки"), "callback_data": cbHandsSafe},
 				{"text": mark(mode == handsModeFull, "🖐 Длинные руки"), "callback_data": cbHandsFull},
+			},
+			{
+				{"text": mark(tm == ttsModeAsk, "🔇 Озвучка по запросу"), "callback_data": cbTTSAsk},
+				{"text": mark(tm == ttsModeAuto, "🔊 Всегда озвучивать"), "callback_data": cbTTSAuto},
+			},
+			{
+				{"text": "🔈 Озвучить ответ", "callback_data": cbSpeak},
 			},
 			{
 				{"text": "🗜 Сжать контекст", "callback_data": cbCompact},
@@ -124,7 +138,8 @@ func menuKeyboard() string {
 func menuText(cfg Config, chatID int64) string {
 	var b strings.Builder
 	b.WriteString("🎛 **Панель Kibborg**\n\n")
-	b.WriteString(handsModeLabel(currentHandsMode()) + "\n\n")
+	b.WriteString(handsModeLabel(currentHandsMode()) + "\n")
+	b.WriteString(ttsModeShort(currentTTSMode()) + "\n\n")
 
 	if t := activeTask(chatID); t != nil && t.GetStatus() == TaskRunning {
 		b.WriteString("⚙️ Сейчас выполняется: «" + capAgentText(t.Input, 60) + "»\n")
@@ -183,6 +198,34 @@ func handleCallbackQuery(cfg Config, botAPI string, allow map[int64]bool, cb *tg
 		answerCallback(botAPI, cb.ID, handsModeShort(mode), false)
 		editTelegramMarkup(botAPI, chatID, messageID, menuText(cfg, chatID), menuKeyboard())
 		sendTelegramMessage(botAPI, chatID, handsModeLabel(mode))
+
+	case cbTTSAuto, cbTTSAsk:
+		want := ttsModeAsk
+		if cb.Data == cbTTSAuto {
+			want = ttsModeAuto
+		}
+		mode := setTTSMode(want, fmt.Sprintf("telegram-menu:%d", chatID))
+		answerCallback(botAPI, cb.ID, ttsModeShort(mode), false)
+		editTelegramMarkup(botAPI, chatID, messageID, menuText(cfg, chatID), menuKeyboard())
+		sendTelegramMessage(botAPI, chatID, ttsModeLabel(mode))
+
+	case cbSpeak:
+		src := takeLastSpeakable(chatID)
+		if src == "" {
+			answerCallback(botAPI, cb.ID, "Нечего озвучивать", false)
+			return
+		}
+		answerCallback(botAPI, cb.ID, "Читаю…", false)
+		log.Printf("[TTS] telegram кнопка «Озвучить», исходник %d символов", utf8.RuneCountInString(src))
+		sf, err := synthesizeSpeech(cfg, src)
+		if err != nil {
+			log.Printf("[TTS] telegram кнопка: %v", err)
+			sendTelegramMessage(botAPI, chatID, "❌ "+err.Error())
+			return
+		}
+		if err := sendTelegramVoiceFile(botAPI, chatID, telegramVoicePath(sf)); err != nil {
+			sendTelegramMessage(botAPI, chatID, "❌ Не отправился голос: "+err.Error())
+		}
 
 	case cbStop:
 		if taskID, ok := stopActiveTask(chatID); ok {
@@ -294,11 +337,12 @@ func skillsText() string {
 		"🧭 **Chrome**: вкладки, чтение DOM и таблиц, клики, формы, загрузка файлов, скриншот страницы.\n" +
 		"📊 **Рынок**: разбор тикера по свечам Binance, размер позиции по риску, журнал сделок.\n" +
 		"🧩 **Модели**: тест железа и каталог GGUF Hugging Face (/hw, /models).\n" +
+		"🔊 **Озвучка**: SuperTonic читает ответ вслух — `/tts auto` всегда, `/speak` по запросу.\n" +
 		"🛡 **Безопасность**: разбор логов, поиск IOC, хеши и энтропия файла.\n" +
 		"🎬 **Видео**: пришли ролик или ссылку — вытащу речь в текст (любой длины), посмотрю кадры, " +
 		"расскажу содержание и найду по нему что нужно. Плюс скачивание, субтитры, конвертация и нарезка.\n" +
 		"👁 **Зрение**: разбор картинок и скриншотов графиков.\n" +
-		"🎙 **Голос**: распознаю голосовые и отвечаю как на текст.\n" +
+		"🎙 **Голос**: распознаю голосовые и отвечаю как на текст. Ответы читаю вслух — SuperTonic, кнопка «Озвучить» или `/speak`.\n" +
 		"🧠 **Память**: помню прошлые диалоги, умею сжимать контекст (/compact).\n\n" +
 		"Границы ставит только режим рук: " + handsModeShort(currentHandsMode()) + " — /menu переключает."
 }

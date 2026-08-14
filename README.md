@@ -90,6 +90,7 @@ Kibborg — это не «ещё один чат с нейросетью». Эт
 | Журнал сделок | `/log`, `/journal`, `/close`, `/size` |
 | Разбор логов и IOC | `/logs`, `/scan`, `/audit` |
 | Память между сессиями | SQLite + опциональные эмбеддинги |
+| Озвучить ответ | кнопка «Озвучить» / `/speak`; тумблер «всегда» = `/tts auto`. SuperTonic на CPU, без GPU |
 | Остановить задачу | `/stop` или кнопка ⏹ — сразу, не через две минуты |
 | Подтвердить опасное | «да» / «нет» в Telegram, кнопки ✅ / 🚫 в вебе |
 
@@ -256,6 +257,7 @@ Task { taskID, канал, 10 минут на задачу }
 | **yt-dlp** | скачивание YouTube / Instagram / TikTok | `pip install -U yt-dlp` |
 | **Python 3.11+** | `huggingface-cli`, `yt-dlp`, опциональный Agent Reach | [python.org](https://www.python.org/downloads/) |
 | **TypeWhisper** | быстрый голос (рекомендуется) | [TypeWhisper для Windows](https://github.com/TypeWhisper/typewhisper-win) |
+| **SuperTonic 3** | озвучка ответов, CPU | `pip install "supertonic[serve]"` |
 | **whisper.cpp** | запасной голос, если TypeWhisper не запущен | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) |
 | **Telegram-бот** | канал с телефона | [@BotFather](https://t.me/BotFather) |
 
@@ -375,9 +377,9 @@ cd engine-go
 
 ### Шаг 8. Запустить
 
-- `engine-go\Start.cmd` — поднимает движок; мозг грузится в VRAM 1–5 минут (или переиспользует уже запущенный `llama-server`).
-- `engine-go\Menu.cmd` → **5** — то же самое.
-- `engine-go\Stop.cmd` — гасит и движок, и мозг.
+- `Start.cmd` в корне репозитория (или `engine-go\Start.cmd`) — **одна команда на весь стек**: панель, мозг, SuperTonic. Мозг грузится 1–5 минут или переиспользует уже тёплый `llama-server`.
+- `Stop.cmd` в корне (или `engine-go\Stop.cmd`) — **одна команда выключить всё**: панель, мозг, озвучку, whisper. TypeWhisper в трее не трогает.
+- `engine-go\Menu.cmd` → **5** старт, **6** стоп.
 
 После старта:
 
@@ -560,6 +562,18 @@ Invoke-RestMethod http://127.0.0.1:8978/v1/status
 3. whisper.cpp, если заданы `WHISPER_*`
 
 Подробности — `engine-go/TYPEWHISPER.md`.
+
+### 5. SuperTonic — озвучка ответов
+
+Чтобы бот **говорил**, а не только слушал:
+
+```powershell
+pip install "supertonic[serve]"
+```
+
+Движок сам поднимает `supertonic serve` на `127.0.0.1:7788` (CPU, ~400 МБ весов при первом запуске). В панели — кнопка «Озвучить» под каждым ответом и тумблер «всегда / по запросу». В Telegram: `/tts auto`, `/tts ask`, `/speak`.
+
+Режим тумблера живёт в `runtime/tts_mode.json`, не в `settings.ini`.
 
 ### 5. Poppler + Tesseract — PDF и сканы
 
@@ -751,6 +765,8 @@ agent_reach_doctor
 | `/logs` | разбор логов (свои или путь) |
 | `/scan <текст>` | поиск IOC |
 | `/audit` | хеш и энтропия файла |
+| `/tts` | озвучка: `/tts auto` всегда, `/tts ask` по запросу |
+| `/speak` | прочитать последний ответ голосом |
 | `/help` | короткая справка |
 
 Голос, фото, кружок, ролик, документ, голая ссылка на видео — всё это тоже вход. Отдельная команда не нужна.

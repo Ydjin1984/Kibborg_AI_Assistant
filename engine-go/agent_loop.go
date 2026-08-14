@@ -71,6 +71,9 @@ type loopState struct {
 	// usedTool: did this task call ANY real tool? request_pack does not count — asking for
 	// more hands is not using them.
 	usedTool bool
+	// seenActs — короткие ярлыки уже сделанного (запрос, URL, файл), чтобы статус
+	// «обдумываю» называл, *что* ушло в модель, а не просто «думаю».
+	seenActs []string
 }
 
 func (ls *loopState) note(text string) {
@@ -156,7 +159,12 @@ func runLayeredAgent(req agentRequest) agentResult {
 
 	// ---- Layer 1: dispatcher ----
 	if req.status != nil {
-		req.status("🧭 Разбираю запрос…")
+		q := oneLine(req.input)
+		if q != "" {
+			req.status("🧭 Разбираю запрос: «" + clipStatus(q, 110) + "»")
+		} else {
+			req.status("🧭 Разбираю запрос…")
+		}
 	}
 	plan := runDispatcher(req.cfg, t, req.baseMsgs, req.memSummary, req.hintPacks)
 	t.Packs = plan.Packs
@@ -214,6 +222,7 @@ func runExecutorLoop(ls *loopState, unlockShared func()) agentResult {
 			ls.msgs = shrinkAgentMsgs(ls.msgs, ls.sys, t.Input, step > 0)
 		}
 
+		ls.note(ls.thinkLine())
 		msg, stats, err := llmChatTools(t.Context(), ls.cfg.BrainPort, ls.msgs, ls.tools, 0.3)
 		if err != nil && isContextBad(err) {
 			log.Printf("[AGENT] %s: контекст/кэш на шаге %d: %v — сжимаю и повторяю", t.ID, step, err)
@@ -268,6 +277,7 @@ func runExecutorLoop(ls *loopState, unlockShared func()) agentResult {
 				continue
 			}
 			lastText = msg.Content
+			ls.note("✍️ Формулирую ответ…")
 			break
 		}
 
@@ -297,7 +307,11 @@ func runExecutorLoop(ls *loopState, unlockShared func()) agentResult {
 	}
 	if strings.TrimSpace(lastText) == "" {
 		if t.Step >= maxAgentSteps {
-			ls.note("🧮 Шаги закончились — подвожу итог.")
+			if len(ls.seenActs) > 0 {
+				ls.note("🧮 Пишу итог по: " + strings.Join(ls.seenActs, " · "))
+			} else {
+				ls.note("🧮 Шаги закончились — подвожу итог.")
+			}
 		}
 		lastText = ls.summarize()
 		if res, done := checkInterrupted(t); done {
@@ -416,6 +430,7 @@ func finishTask(ls *loopState, status TaskStatus, text string) agentResult {
 	if s := strings.TrimSpace(ls.plan.Summary); s != "" && status == TaskDone {
 		text = s + "\n\n" + text
 	}
+	text = annotateNumbers(text)
 	res := agentResult{
 		Text:      text,
 		Artifacts: arts,
@@ -473,6 +488,7 @@ func (ls *loopState) summarize() string {
 				capAgentText(ls.task.Input, 200) + "». Если данных мало — скажи честно."},
 		}
 	}
+	ls.note("🧠 Собираю ответ из того, что нашёл…")
 	out, _, err := llmChatTools(ls.task.Context(), ls.cfg.BrainPort, sumMsgs, nil, 0.3)
 	if err != nil {
 		log.Printf("[AGENT] %s: итоговый проход не удался: %v", ls.task.ID, err)
@@ -652,20 +668,29 @@ func (ls *loopState) executeGuarded(tc toolCall) toolOutcome {
 // The tool context is clamped to what is left of the task budget (§4.2 hierarchy).
 func (ls *loopState) runTool(tc toolCall, name string, args map[string]any) ToolResult {
 	t := ls.task
-	ls.note(toolStatusWord(name))
+	ls.note(toolStatusLine(name, args))
+	if hint := toolActHint(name, args); hint != "" {
+		ls.rememberAct(hint)
+	}
 
+	var res ToolResult
 	if localToolNames[name] {
-		if res, ok := dispatchLocalTool(t, ls.cfg, name, tc.ID, args); ok {
-			return res
+		if local, ok := dispatchLocalTool(t, ls.cfg, name, tc.ID, args); ok {
+			res = local
 		}
 	}
-	toolCtx, cancel := context.WithTimeout(t.Context(), toolBudget(t))
-	defer cancel()
+	if res.Status == "" && res.Text == "" && res.Err == nil {
+		toolCtx, cancel := context.WithTimeout(t.Context(), toolBudget(t))
+		defer cancel()
 
-	log.Printf("[AGENT] %s tool %s(%s)", t.ID, name, capLog(tc.Function.Arguments))
-	text, err := ls.sess.Dispatch(toolCtx, name, args)
-	res := classifyToolErr(t.Context(), text, err)
-	res.Text = capAgentText(res.Text, agentMaxToolChars)
+		log.Printf("[AGENT] %s tool %s(%s)", t.ID, name, capLog(tc.Function.Arguments))
+		text, err := ls.sess.Dispatch(toolCtx, name, args)
+		res = classifyToolErr(t.Context(), text, err)
+		res.Text = capAgentText(res.Text, agentMaxToolChars)
+	}
+	if extra := toolResultLine(name, args, res); extra != "" {
+		ls.note(extra)
+	}
 	return res
 }
 
@@ -676,54 +701,6 @@ func toolBudget(t *Task) time.Duration {
 		return time.Second // let the call fail fast with the task's own deadline
 	}
 	return remaining
-}
-
-// toolStatusWord is the short human status for a tool (§8: statuses yes, CoT no).
-func toolStatusWord(name string) string {
-	switch name {
-	case "web_search", "semantic_search", "github_search":
-		return "🔎 Ищу…"
-	case "read_url", "http_get", "get_text", "get_html", "analyze_dom":
-		return "📖 Читаю…"
-	case "run_command":
-		return "🖥 Выполняю команду…"
-	case "write_file", "mkdir", "delete_path":
-		return "📁 Работаю с файлами…"
-	case "download_video", "download_file", "youtube_transcript":
-		return "⬇️ Скачиваю…"
-	case "analyze_video", "transcribe_media":
-		return "🎬 Разбираю видео…"
-	case "video_frames":
-		return "👁 Смотрю кадры…"
-	case "media_info":
-		return "🎬 Смотрю метаданные…"
-	case "read_document":
-		return "📄 Читаю документ…"
-	case "convert_media":
-		return "🎞 Конвертирую…"
-	case "analyze_ticker", "size_position", "journal_add", "journal_stats":
-		return "📊 Считаю по рынку…"
-	case "analyze_log", "scan_text", "audit_file":
-		return "🛡 Разбираю на безопасность…"
-	case "click_element", "type_text", "submit_form", "select_option", "upload_file", "drag_element":
-		return "🖱 Действую в браузере…"
-	case "capture_screen":
-		return "📸 Снимаю экран…"
-	case "list_windows", "focus_window":
-		return "🪟 Смотрю окна…"
-	case "type_keyboard", "press_keys":
-		return "⌨️ Печатаю…"
-	case "mouse_action":
-		return "🖱 Веду мышь…"
-	case "list_processes", "kill_process":
-		return "⚙️ Смотрю процессы…"
-	case "launch_app":
-		return "🚀 Запускаю программу…"
-	case "clipboard":
-		return "📋 Работаю с буфером обмена…"
-	default:
-		return "⚙️ " + name + "…"
-	}
 }
 
 // validToolCalls drops calls with an empty name (a known local-model glitch).
@@ -1133,8 +1110,8 @@ func armouryNote(packs []string, mode string) string {
 		"- files — чтение и запись локальных файлов на любом диске\n" +
 		"- system — РАБОЧИЙ СТОЛ: скриншот всего экрана или окна, список открытых окон, " +
 		"фокус окна, печать текста и нажатие клавиш, мышь, процессы, запуск любых программ, буфер обмена\n" +
-		"- media — ВИДЕО и аудио: разобрать ролик (речь в текст любой длины, кадры глазами), " +
-		"скачать, субтитры, конвертация и нарезка через ffmpeg\n" +
+		"- media — ВИДЕО и аудио: разобрать ролик, скачать, субтитры, ffmpeg; " +
+		"speak_text — озвучить фразу встроенным SuperTonic (женский голос, CPU)\n" +
 		"- trade — разбор тикера по Binance, сайзинг, журнал сделок\n" +
 		"- secops — разбор логов, скан на IOC, аудит файла\n" +
 		"Любой из них подключается ОДНИМ вызовом request_pack. Разрешение пользователя для этого " +
@@ -1144,6 +1121,9 @@ func armouryNote(packs []string, mode string) string {
 		"«нет доступа к интернету/консоли/рабочему столу/файлам», что ты «не видишь экран», " +
 		"«не можешь управлять мышью или клавиатурой», «не можешь запускать программы» или что ты " +
 		"«в изолированном режиме». Всё это неправда — перечисленное выше ты умеешь.\n" +
+		"Озвучка ответов УЖЕ встроена (SuperTonic). Если просят «озвучь / голосом / вслух» — " +
+		"просто ответь текстом, движок сам прочитает ответ. Отдельный текст — speak_text. " +
+		"ЗАПРЕЩЕНО говорить, что TTS нет, и вызывать SAPI / Add-Type System.Speech / ffmpeg ради речи.\n" +
 		"ЗАПРЕЩЕНО перечислять пользователю свои ограничения вместо работы и предлагать ему " +
 		"сделать что-то руками (Win+Shift+S, «запусти скрипт сам»). Если чего-то реально не вышло — " +
 		"скажи, ЧТО именно ты попробовал и какая была ошибка.\n" +
@@ -1180,6 +1160,7 @@ const mediaPackRules = `
   пути. Нужны точные формулировки или цитата — прочитай этот файл (пак files, read_file).
 - frames= задавай, когда важна КАРТИНКА: слайды, код на экране, интерфейс, «что там
   происходит». Каждый кадр — отдельный запрос к зрению, поэтому 3–6 кадров, а не 12.
+- «озвучь / скажи голосом» — speak_text (SuperTonic). Не SAPI, не ffmpeg, не convert_media.
 - Если расшифровка пустая или речи нет — так и скажи. Придумывать содержание ролика по
   названию ЗАПРЕЩЕНО.
 - Дальше работай с расшифровкой как с обычным текстом: искать по ней проект на GitHub,

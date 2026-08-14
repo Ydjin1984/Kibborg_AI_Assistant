@@ -92,7 +92,7 @@ func TestPackContents(t *testing.T) {
 		packConsole:     {"run_command"},
 		packFiles:       {"read_file", "write_file", "list_dir", "file_info", "mkdir", "delete_path", "read_document"},
 		packMedia: {"download_video", "youtube_transcript", "analyze_video", "transcribe_media",
-			"video_frames", "media_info", "convert_media"},
+			"video_frames", "media_info", "convert_media", "speak_text"},
 		packTrade:  {"analyze_ticker", "size_position", "journal_add", "journal_stats"},
 		packSecops: {"analyze_log", "scan_text", "audit_file"},
 		packSystem: {"capture_screen", "list_windows", "focus_window", "type_keyboard",

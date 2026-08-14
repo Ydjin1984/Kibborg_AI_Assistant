@@ -133,6 +133,7 @@ func main() {
 	go warmUpBrain(cfg)
 	// Speech recognition (whisper.cpp) — only if configured in settings.ini.
 	go ensureWhisper(cfg)
+	go ensureTTS(cfg)
 	// Dialog context survives restarts.
 	loadHistory()
 	startHistorySaver()
@@ -146,6 +147,7 @@ func main() {
 	// write/delete allowlist roots (§6.1), and any confirmation that died with the previous
 	// process — the honest answer to those is «задача потерялась», not a blind replay (§6.3).
 	loadHandsMode()
+	loadTTSMode()
 	setHandsRoots(cfg.HandsRoots)
 	reportStalePending()
 	go expirePendingLoop(func(chatID int64, channel, text string) {
@@ -229,7 +231,8 @@ func handledPreQueue(cfg Config, botAPI string, allow map[int64]bool, msg *tgMes
 	isStop, _ := parseCommand(text, stopCommands)
 	isHands, handsArg := parseCommand(text, handsCommands)
 	isMenu, _ := parseCommand(text, menuCommands)
-	if !isStop && !isHands && !isMenu {
+	isTTS, ttsArg := parseCommand(text, ttsCommands)
+	if !isStop && !isHands && !isMenu && !isTTS {
 		return false
 	}
 	if !isOwnerChat(allow, chatID) {
@@ -253,6 +256,17 @@ func handledPreQueue(cfg Config, botAPI string, allow map[int64]bool, msg *tgMes
 		} else {
 			sendTelegramMessage(botAPI, chatID, "Нечего останавливать — активной задачи нет.")
 		}
+		return true
+	}
+
+	if isTTS {
+		arg := strings.TrimSpace(ttsArg)
+		if arg == "" {
+			sendTelegramMessage(botAPI, chatID, ttsModeLabel(currentTTSMode()))
+			return true
+		}
+		mode := setTTSMode(arg, fmt.Sprintf("telegram:%d", chatID))
+		sendTelegramMessage(botAPI, chatID, ttsModeLabel(mode))
 		return true
 	}
 
@@ -516,6 +530,7 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 	isCompact, _ := parseCommand(text, compactCommands)
 	isHW, _ := parseCommand(text, hardwareCommands)
 	isModels, modelsArg := parseCommand(text, modelsCommands)
+	isSpeak, speakArg := parseCommand(text, speakCommands)
 	switch {
 	case strings.HasPrefix(lower, "/start"), strings.HasPrefix(lower, "/help"):
 		sendTelegramWithMarkup(botAPI, chatID,
@@ -526,6 +541,7 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 				"🎙 Голос: TypeWhisper (HTTP API) → текст → ответ; fallback whisper.cpp. В Web — кнопка 🎙.\n"+
 				"🎬 Видео: пришли ролик (или ссылку) — распознаю речь, посмотрю кадры и отвечу по содержанию. "+
 				"С подписью «найди этот проект на гитхабе» — сразу и найду. Файл на диске: «разбери D:\\видео\\урок.mp4».\n"+
+				"🔊 /tts — озвучка ответов: `auto` всегда, `ask` по запросу. `/speak` — прочитать последний ответ.\n"+
 				"🖥 /hw — тест железа: сокеты, ядра, потоки, RAM, карты, VRAM.\n"+
 				"📦 /models [запрос] — каталог GGUF Hugging Face под твоё железо. Скачать: /models get owner/repo file.gguf\n"+
 				"📊 /analyze <тикер> — детерминированный разбор по данным Binance (режим, скор, тренды). Пример: /analyze BTC\n"+
@@ -625,6 +641,27 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 		return
 	case isModels:
 		sendTelegramMessage(botAPI, chatID, handleModelsCommand(modelsArg))
+		return
+	case isSpeak:
+		src := strings.TrimSpace(speakArg)
+		if src == "" {
+			src = takeLastSpeakable(chatID)
+		}
+		if src == "" {
+			sendTelegramMessage(botAPI, chatID, "Нечего озвучивать — сначала нужен ответ, либо `/speak <текст>`.")
+			return
+		}
+		sendTelegramMessage(botAPI, chatID, "🔊 Читаю…")
+		log.Printf("[TTS] telegram /speak, исходник %d символов", utf8.RuneCountInString(src))
+		sf, err := synthesizeSpeech(cfg, src)
+		if err != nil {
+			log.Printf("[TTS] telegram /speak: %v", err)
+			sendTelegramMessage(botAPI, chatID, "❌ "+err.Error())
+			return
+		}
+		if err := sendTelegramVoiceFile(botAPI, chatID, telegramVoicePath(sf)); err != nil {
+			sendTelegramMessage(botAPI, chatID, "❌ Не отправился голос: "+err.Error())
+		}
 		return
 	case isSize:
 		sendTelegramMessage(botAPI, chatID, handleSizeCommand(cfg, sizeArg))
@@ -727,7 +764,7 @@ func runTelegramAgent(cfg Config, botAPI string, allow map[int64]bool, chatID in
 
 	res := runAgent(cfg, actor, base, task, telegramStatus(botAPI, chatID))
 	stop()
-	deliverAgentResult(botAPI, chatID, text, res)
+	deliverAgentResult(cfg, botAPI, chatID, text, res)
 	// Окно диалога подошло к пределу — пересказываем старое в сводку вместо того, чтобы молча
 	// его выбросить. В фоне: пользователь уже получил ответ и ждать сжатия не должен.
 	maybeAutoCompact(cfg, chatID, func(note string) { sendTelegramMessage(botAPI, chatID, note) })
@@ -768,7 +805,7 @@ func handleChartAnalysis(cfg Config, botAPI string, allow map[int64]bool, chatID
 		hintPacks:  []string{packTrade},
 	})
 	stop()
-	deliverAgentResult(botAPI, chatID, "[график] "+symbol, res)
+	deliverAgentResult(cfg, botAPI, chatID, "[график] "+symbol, res)
 }
 
 // chartTaskText builds the /chart task: analyse the resolved ticker with live data, using the
@@ -787,23 +824,24 @@ func chartTaskText(symbol, extra, desc string) string {
 // telegramStatus throttles step statuses so a long task does not spam the chat.
 func telegramStatus(botAPI string, chatID int64) func(string) {
 	var last string
-	var lastAt time.Time
 	return func(s string) {
-		if s == "" || s == last || time.Since(lastAt) < 2*time.Second {
+		s = strings.TrimSpace(s)
+		if s == "" || s == last {
 			return
 		}
-		last, lastAt = s, time.Now()
+		last = s
 		sendTelegramMessage(botAPI, chatID, s)
 	}
 }
 
 // deliverAgentResult sends notices, the answer and the artifacts, then records history.
-func deliverAgentResult(botAPI string, chatID int64, userText string, res agentResult) {
+func deliverAgentResult(cfg Config, botAPI string, chatID int64, userText string, res agentResult) {
 	for _, n := range res.Notices {
 		sendTelegramMessage(botAPI, chatID, n)
 	}
 	if strings.TrimSpace(res.Text) != "" {
 		sendTelegramMessage(botAPI, chatID, res.Text)
+		speakAfterReply(cfg, botAPI, chatID, userText, res.Text)
 	}
 	sendArtifacts(botAPI, chatID, res.Artifacts)
 	if !res.interrupted() {
@@ -824,7 +862,7 @@ func answerTelegramConfirmation(cfg Config, botAPI string, chatID int64, approve
 	defer stop()
 	res := resumeConfirmed(rs, approved, telegramStatus(botAPI, chatID))
 	stop()
-	deliverAgentResult(botAPI, chatID, rs.task.Input, res)
+	deliverAgentResult(cfg, botAPI, chatID, rs.task.Input, res)
 }
 
 // parseCommand reports whether text opens with one of cmds and returns the rest of the line.

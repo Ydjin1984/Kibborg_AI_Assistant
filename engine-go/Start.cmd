@@ -1,11 +1,17 @@
 @echo off
+chcp 65001
 setlocal EnableExtensions
-chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ============================================================
-echo   KIBBORG Go Engine - START
+echo   KIBBORG - START ves stack
 echo ============================================================
+echo   Движок сам поднимет то, чего ещё нет:
+echo   - мозг llama-server, если порт свободен
+echo   - SuperTonic TTS, если порт свободен
+echo   - whisper.cpp, если задан в settings.ini
+echo   Панель: 127.0.0.1:8090
+echo   Стоп всего стека: Stop.cmd
 echo.
 
 set "EXE=%~dp0kibborg-go-engine.exe"
@@ -15,7 +21,7 @@ if not exist "%EXE%" (
     echo Running lint + build via build.cmd ...
     call "%~dp0build.cmd"
     if errorlevel 1 (
-        echo [FAIL] Lint/build failed. Install Go and try again ^(Menu - 4^).
+        echo [FAIL] Lint/build failed. Install Go and try again, Menu 4.
         pause
         exit /b 1
     )
@@ -27,19 +33,15 @@ if not exist "%EXE%" (
     exit /b 1
 )
 
-REM --- Single instance: kill any previous engine so Web :8090 and Telegram getUpdates
-REM don't collide (port bind error / HTTP 409 Conflict). Brain (llama-server) is left
-REM running so the model stays warm in VRAM (STOP_BRAIN_ON_EXIT=false).
 echo Checking for previous engine instance...
-taskkill /FI "WINDOWTITLE eq KIBBORG-ENGINE*" /F >nul 2>&1
-taskkill /IM kibborg-go-engine.exe /F >nul 2>&1
-REM Brief pause so Windows releases ports 8090/8002 after kill.
-timeout /t 2 /nobreak >nul
+taskkill /FI "WINDOWTITLE eq KIBBORG-ENGINE*" /F
+taskkill /IM kibborg-go-engine.exe /F
+ping -n 3 127.0.0.1 > "%TEMP%\kibborg-wait.txt"
 
 echo Starting: %EXE%
-echo Brain loads into VRAM for 1-5 min in background ^(or reuses already-running llama-server^).
-echo Web UI: http://127.0.0.1:8090
-echo Stop: Stop.cmd or Ctrl+C
+echo Мозг грузится в VRAM 1-5 мин, либо берёт уже тёплый llama-server.
+echo Панель: 127.0.0.1:8090
+echo Стоп: Stop.cmd или Ctrl+C
 echo.
 "%EXE%"
 set "RC=%ERRORLEVEL%"

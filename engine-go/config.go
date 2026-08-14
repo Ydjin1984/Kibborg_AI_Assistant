@@ -68,6 +68,14 @@ type Config struct {
 	TradeRiskPct  float64 // риск на сделку в % от счёта (напр. 1.5)
 	TradeLeverage float64 // плечо по умолчанию (1 = спот/без плеча)
 	TradeMMR      float64 // maintenance margin rate для оценки ликвидации (напр. 0.005)
+
+	// Озвучка (SuperTonic 3, CPU). Режим always/ask живёт в runtime/tts_mode.json, не здесь.
+	TTSURL     string // http://127.0.0.1:7788; пусто = auto; off = выключить
+	TTSExe     string // supertonic.exe; пусто = PATH
+	TTSPort    int    // порт serve, по умолчанию 7788
+	TTSVoice   string // F1–F5 женские, M1–M5 мужские. Пусто = F1
+	TTSSteps   int    // качество 5–12, пусто = 8
+	TTSThreads int    // потоки ONNX; 0 = все физические ядра обоих сокетов
 }
 
 // loadConfig parses simple KEY=VALUE lines from settings.ini (ignoring # comments),
@@ -135,6 +143,13 @@ func loadConfig(iniPath string) Config {
 		TradeRiskPct:  atofDefault(kv["TRADE_RISK_PCT"], 1.0),
 		TradeLeverage: atofDefault(kv["TRADE_LEVERAGE"], 1),
 		TradeMMR:      atofDefault(kv["TRADE_MMR"], 0.005),
+
+		TTSURL:     strings.TrimSpace(kv["TTS_URL"]),
+		TTSExe:     strings.TrimSpace(kv["TTS_SERVER"]),
+		TTSPort:    atoiDefault(kv["PORT_TTS"], defaultTTSPort),
+		TTSVoice:   strings.TrimSpace(kv["TTS_VOICE"]),
+		TTSSteps:   atoiDefault(kv["TTS_STEPS"], 8),
+		TTSThreads: atoiDefault(kv["TTS_THREADS"], 0),
 	}
 
 	// Embed exe defaults to the main llama-server build; embed model may be relative to engine-go.

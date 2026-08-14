@@ -25,7 +25,7 @@ var localToolNames = map[string]bool{
 	"analyze_ticker": true, "size_position": true, "journal_add": true, "journal_stats": true,
 	"analyze_log": true, "scan_text": true, "audit_file": true,
 	"analyze_video": true, "transcribe_media": true, "video_frames": true,
-	"media_info": true, "convert_media": true, "read_document": true,
+	"media_info": true, "convert_media": true, "speak_text": true, "read_document": true,
 	"request_pack": true,
 }
 

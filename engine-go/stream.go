@@ -113,6 +113,7 @@ func chatWithHistoryStream(cfg Config, botAPI string, chatID int64, userText str
 	}
 	recordHistory(chatID, userText, reply)
 	lm.finish(reply + statsFooter(stats))
+	speakAfterReply(cfg, botAPI, chatID, userText, reply)
 	log.Printf("[TELEGRAM] replied to %d (stream, %d chars, %.1f tok/s)", chatID, len(reply), stats.GenPerSec)
 }
 

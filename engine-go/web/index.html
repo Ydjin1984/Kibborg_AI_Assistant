@@ -151,20 +151,25 @@
   .filelink:hover{color:var(--text);border-color:var(--edge2)}
 
   /* индикатор работы */
-  .work{display:flex;align-items:baseline;gap:10px;font-size:14px;color:var(--dim);font-weight:300}
+  .work{display:flex;align-items:baseline;gap:10px;font-size:14px;color:var(--dim);font-weight:300;flex-wrap:wrap}
   .work .sym{font-size:15px;color:var(--jade);width:1em;text-align:center;flex:none}
-  .work .what{color:var(--text)}
-  .work .wmeta{font-family:Consolas,monospace;font-size:11.5px;color:var(--faint)}
+  .work .what{color:var(--text);flex:1 1 220px;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+  .work .wmeta{font-family:Consolas,monospace;font-size:11.5px;color:var(--faint);flex:none}
 
   /* лента шагов агента */
   .trace{padding:15px 17px;max-width:760px}
-  .trace .th{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .trace .th{display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer;user-select:none}
   .trace .th .lbl{color:var(--dim)}
+  .trace .th .lbl::before{content:"▾ ";color:var(--jade);font-size:11px}
   .trace .th .r{margin-left:auto;font-size:11.5px;color:var(--faint);font-family:Consolas,monospace}
+  .trace.shut{padding:11px 15px;cursor:pointer}
+  .trace.shut .th{margin-bottom:0}
+  .trace.shut .th .lbl::before{content:"▸ "}
+  .trace.shut .tl{display:none}
   .tl{position:relative;padding-left:22px;display:flex;flex-direction:column;gap:2px}
   .tl::before{content:"";position:absolute;left:4px;top:8px;bottom:10px;width:1px;
     background:linear-gradient(180deg,var(--jade-deep),rgba(47,107,94,.12))}
-  .tl .s{position:relative;padding:5px 0;display:flex;align-items:baseline;gap:9px}
+  .tl .s{position:relative;padding:5px 0;display:flex;align-items:flex-start;gap:9px}
   .tl .s::before{content:"";position:absolute;left:-22px;top:11px;width:9px;height:9px;border-radius:50%;
     background:var(--bg);border:1.5px solid var(--jade-deep)}
   .tl .s.done::before{background:var(--jade-deep)}
@@ -173,7 +178,7 @@
   .tl .s.warn::before{border-color:var(--sand);background:var(--sand)}
   .tl .s.bad::before{border-color:var(--rose);background:var(--rose)}
   @keyframes beat{50%{box-shadow:0 0 0 9px rgba(111,191,168,.04)}}
-  .tl .s .n{font-size:13px;color:#D3E0E1;font-weight:300;flex:1;min-width:0}
+  .tl .s .n{font-size:13px;color:#D3E0E1;font-weight:300;flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
   .tl .s .t{font-family:Consolas,monospace;font-size:11px;color:var(--faint);flex:none}
 
   /* подтверждение */
@@ -389,6 +394,9 @@
     <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h3l2 2.5h6A2.5 2.5 0 0 1 20 10v6.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/></symbol>
   <symbol id="i-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M3 12h4l2.5-6 4 12 2.5-6h5"/></symbol>
+  <symbol id="i-speak" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 10v4h3.2L12 18.5V5.5L7.2 10H4z"/><path d="M15.2 9.2a3.2 3.2 0 0 1 0 5.6M17.6 7a6 6 0 0 1 0 10"/>
+  </symbol>
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <rect x="9" y="2.4" width="6" height="11.2" rx="3"/><path d="M5.4 11.2a6.6 6.6 0 0 0 13.2 0"/>
     <path d="M12 17.8V21.4M8.4 21.4h7.2"/></symbol>
@@ -434,6 +442,9 @@
   <div class="head-r">
     <button class="gbtn" id="handsBtn" type="button" title="Длина рук: короткие — опасное спрашивает подтверждение; длинные — весь ПК без вопросов (ядерное переспрашивается один раз)">
       <svg class="icon"><use href="#i-shield"></use></svg><span id="handsLabel">руки: короткие</span>
+    </button>
+    <button class="gbtn" id="ttsBtn" type="button" title="Озвучка SuperTonic: всегда читать ответы или только по кнопке «Озвучить»">
+      <svg class="icon"><use href="#i-speak"></use></svg><span id="ttsLabel">озвучка: по запросу</span>
     </button>
     <button class="gbtn" id="compactBtn" type="button" title="Сжать историю диалога в сводку (аналог /compact)">
       <svg class="icon"><use href="#i-compress"></use></svg>Сжать
@@ -929,8 +940,43 @@ function addCopy(host, getText) {
   btn.type = "button";
   btn.onclick = () => copyText(getText(), btn, "Копировать");
   m.appendChild(btn);
+  const speak = el("button", "tinybtn", ic("speak", 13) + "Озвучить");
+  speak.type = "button";
+  speak.onclick = () => speakText(getText(), speak, host);
+  m.appendChild(speak);
   host.appendChild(m);
   return m;
+}
+
+let ttsAuto = false, ttsAudio = null;
+function paintTTS(j) {
+  ttsAuto = !!(j && j.auto);
+  const lab = $("ttsLabel");
+  if (lab) lab.textContent = ttsAuto ? "озвучка: всегда" : "озвучка: по запросу";
+  const btn = $("ttsBtn");
+  if (btn) btn.classList.toggle("on", ttsAuto);
+}
+async function speakText(text, btn, host) {
+  const src = String(text || "").trim();
+  if (!src) { toast("Нечего озвучивать"); return; }
+  if (btn) { btn.disabled = true; btn.innerHTML = ic("speak", 13) + "Читаю…"; }
+  try {
+    const j = await (await fetch("/api/speak", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: src })
+    })).json();
+    if (j.error) { toast(j.error, "bad"); return; }
+    if (ttsAudio) { try { ttsAudio.pause(); } catch (_) {} }
+    ttsAudio = new Audio(j.url);
+    ttsAudio.play().catch(e => toast(e.message, "bad"));
+    if (host && !host.querySelector("audio.tts")) {
+      const a = el("audio", "tts");
+      a.controls = true; a.src = j.url;
+      a.style.cssText = "display:block;margin-top:10px;width:min(360px,100%)";
+      host.appendChild(a);
+    }
+  } catch (e) { toast("Озвучка: " + e.message, "bad"); }
+  if (btn) { btn.disabled = false; btn.innerHTML = ic("speak", 13) + "Озвучить"; }
 }
 function fileLinks(host, files) {
   if (!files || !files.length) return;
@@ -1002,9 +1048,9 @@ function newTrace(host) {
   const box = el("div", "panel trace");
   box.innerHTML = '<div class="th"><span class="lbl">Ход задачи</span><span class="r"></span></div><div class="tl"></div>';
   host.appendChild(box);
-  const tl = box.querySelector(".tl"), counter = box.querySelector(".r");
+  const tl = box.querySelector(".tl"), counter = box.querySelector(".r"), lbl = box.querySelector(".lbl");
   const started = Date.now();
-  let steps = 0, lastNode = null, lastAt = started;
+  let steps = 0, lastNode = null, lastAt = started, done = false;
   const secs = ms => { const s = ms / 1000;
     return s < 60 ? s.toFixed(1) + " с" : Math.floor(s/60) + " м " + Math.round(s % 60) + " с"; };
   const kindOf = t => /⛔|❌|не удалось|провал|ошибк/i.test(t) ? "bad"
@@ -1015,10 +1061,18 @@ function newTrace(host) {
     lastNode.classList.add(kindOf(lastNode.dataset.text || ""));
     lastNode.querySelector(".t").textContent = secs(Date.now() - lastAt);
   };
+  const toggle = ev => {
+    if (!done) return;
+    ev.stopPropagation();
+    box.classList.toggle("shut");
+  };
+  box.querySelector(".th").onclick = toggle;
+  box.onclick = toggle;
   return {
     add(text) {
       if (!text) return;
       close();
+      box.classList.remove("shut");
       const s = el("div", "s live");
       s.dataset.text = text;
       s.innerHTML = '<span class="n"></span><span class="t">…</span>';
@@ -1031,7 +1085,12 @@ function newTrace(host) {
     finish() {
       close();
       if (!steps) { box.remove(); return; }
-      counter.textContent = steps + " · " + secs(Date.now() - started);
+      done = true;
+      lbl.textContent = "Формулирую ответ";
+      counter.textContent = steps + (steps === 1 ? " шаг" : steps < 5 ? " шага" : " шагов") +
+        " · " + secs(Date.now() - started);
+      box.classList.add("shut");
+      box.title = "Нажми — развернуть ход задачи";
     }
   };
 }
@@ -1132,7 +1191,7 @@ async function send() {
       if (ev.status !== undefined && !ev.done) {
         if (!trace) trace = newTrace(host);
         trace.add(ev.status);
-        setWorkLabel(ev.status.slice(0, 90));
+        setWorkLabel(ev.status);
         return;
       }
       if (ev.done) {
@@ -1148,6 +1207,17 @@ async function send() {
             ev.stats.prompt_tok_s + " ток/с · " + ev.stats.gen_tokens + " ток за " + ev.stats.total_sec + " с"));
         }
         addCopy(host, () => answer);
+        if (ev.tts_url) {
+          if (ttsAudio) { try { ttsAudio.pause(); } catch (_) {} }
+          ttsAudio = new Audio(ev.tts_url);
+          ttsAudio.play().catch(e => toast(e.message, "bad"));
+          const a = el("audio", "tts");
+          a.controls = true; a.src = ev.tts_url;
+          a.style.cssText = "display:block;margin-top:10px;width:min(360px,100%)";
+          host.appendChild(a);
+        } else if (ev.tts_error) {
+          toast(ev.tts_error, "bad");
+        } else if (ttsAuto && answer) speakText(answer, null, host);
         loadArtifactsSoon();
         scrollDown();
         return;
@@ -1203,7 +1273,7 @@ function renderConfirm(host, p) {
         if (ev.error) { stopWork(); h.classList.add("err"); b.textContent = "⚠ " + ev.error; return; }
         if (ev.status !== undefined && !ev.done) {
           if (!trace) trace = newTrace(h);
-          trace.add(ev.status); setWorkLabel(ev.status.slice(0, 90));
+          trace.add(ev.status); setWorkLabel(ev.status);
           return;
         }
         if (ev.done) {
@@ -1214,6 +1284,7 @@ function renderConfirm(host, p) {
           if (ev.waiting) renderConfirm(h, ev.pending || null);
           fileLinks(h, ev.files);
           addCopy(h, () => txt);
+          if (ttsAuto && txt) speakText(txt, null, h);
           loadArtifactsSoon();
         }
       });
@@ -1277,6 +1348,19 @@ handsBtn.onclick = async () => {
   } catch (e) { toast("Не вышло: " + e.message, "bad"); }
 };
 (async () => { try { paintHands(await (await fetch("/api/hands")).json()); } catch (_) {} })();
+const ttsBtn = $("ttsBtn");
+ttsBtn.onclick = async () => {
+  try {
+    const next = ttsAuto ? "ask" : "auto";
+    const j = await (await fetch("/api/tts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: next }),
+    })).json();
+    paintTTS(j);
+    toast(next === "auto" ? "Ответы читаю вслух" : "Озвучка только по кнопке");
+  } catch (e) { toast("Не вышло: " + e.message, "bad"); }
+};
+(async () => { try { paintTTS(await (await fetch("/api/tts")).json()); } catch (_) {} })();
 
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
@@ -1553,7 +1637,7 @@ function streamInto(host, url, payload, firstLabel) {
         if (ev.error) { stopWork(); body.textContent = "⚠ " + ev.error; return; }
         if (ev.status !== undefined && !ev.done) {
           if (!trace) trace = newTrace(panel);
-          trace.add(ev.status); setWorkLabel(ev.status.slice(0, 90));
+          trace.add(ev.status); setWorkLabel(ev.status);
           return;
         }
         if (ev.done) {
@@ -1564,6 +1648,7 @@ function streamInto(host, url, payload, firstLabel) {
           body.innerHTML = renderMd(head + (ev.text || ""));
           fileLinks(panel, ev.files);
           addCopy(panel, () => ev.text || "");
+          if (ttsAuto && ev.text) speakText(ev.text, null, panel);
           loadArtifactsSoon();
           return;
         }
@@ -1762,7 +1847,7 @@ async function refreshStatus() {
         '<div class="s">Панель отвечает только этому компьютеру (127.0.0.1). Те же возможности есть в Telegram: ' +
         "<code>/analyze BTC</code>, <code>/chart</code>, <code>/agent</code>, <code>/browser</code>, " +
         "<code>/download</code>, <code>/compact</code>, <code>/hands</code>, " +
-        "<code>/hw</code>, <code>/models</code>.</div></div>";
+        "<code>/hw</code>, <code>/models</code>, <code>/tts</code>, <code>/speak</code>.</div></div>";
   } catch (e) {
     setChip("dotBrain", "chipBrain", "bad", "бот не отвечает");
     $("orb").classList.add("bad");
@@ -1795,7 +1880,8 @@ async function restoreHistory() {
         "- перетащи файл в окно или нажми скрепку\n" +
         "- зажми микрофон и скажи голосом\n" +
         "- вкладка **Разбор** — уровни, ATR и сценарии лонга и шорта по дневкам\n" +
-        "- вкладка **Модели** — тест железа и каталог GGUF"));
+        "- вкладка **Модели** — тест железа и каталог GGUF\n" +
+        "- кнопка **Озвучить** под ответом — SuperTonic читает вслух (тумблер в шапке: всегда / по запросу)"));
     }
     if (j.context) paintContext(j.context);
     if (j.pending) {

@@ -95,6 +95,19 @@ PORT_WHISPER=8081
 # Путь к ffmpeg (пусто = искать в PATH)
 FFMPEG=
 
+# === ОЗВУЧКА (SuperTonic 3, CPU) ===
+# pip install "supertonic[serve]"  — движок сам поднимает `supertonic serve` на PORT_TTS.
+# Режим always/ask НЕ здесь: тумблер в шапке панели или /tts в Telegram (runtime/tts_mode.json).
+# TTS_URL=off — полностью выключить. Пусто = http://127.0.0.1:7788
+TTS_URL=
+TTS_SERVER=
+PORT_TTS=7788
+# F1–F5 женские, M1–M5 мужские.
+TTS_VOICE=F1
+TTS_STEPS=8
+# Потоки ONNX. 0 = все физические ядра обоих сокетов (на 2×Xeon иначе грузится один).
+TTS_THREADS=0
+
 # === ЗАВЕРШЕНИЕ РАБОТЫ ===
 # true = при выходе бота гасить запущенный ИМ llama-server (по умолчанию false — модель
 # остаётся тёплой в VRAM между перезапусками бота).

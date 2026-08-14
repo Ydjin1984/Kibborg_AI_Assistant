@@ -64,6 +64,7 @@ func TestMenuKeyboardIsValidTelegramMarkup(t *testing.T) {
 	known := map[string]bool{
 		cbHandsFull: true, cbHandsSafe: true, cbCompact: true, cbReset: true,
 		cbStop: true, cbStatus: true, cbSkills: true, cbRefresh: true,
+		cbTTSAuto: true, cbTTSAsk: true, cbSpeak: true,
 	}
 	for data := range seen {
 		if !known[data] {
