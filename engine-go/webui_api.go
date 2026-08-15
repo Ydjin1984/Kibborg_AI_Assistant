@@ -247,7 +247,17 @@ func handleAPICandles(w http.ResponseWriter, r *http.Request) {
 		highs[i], lows[i], closes[i], vols[i] = b.H, b.L, b.C, b.V
 	}
 	osc := trading.BuildOscillatorPane(highs, lows, closes, vols, trading.TrendLabel(closes), 14, 9, 0, 0, 0)
-	writeJSON(w, map[string]any{"symbol": symbol, "interval": interval, "candles": bars, "oscillator": osc})
+	opens := make([]int64, n)
+	for i, b := range bars {
+		opens[i] = b.T
+	}
+	funding := fundingMarksForBars(symbol, interval, opens)
+	oiBars, cvdBars := flowPaneForBars(symbol, interval, opens)
+	writeJSON(w, map[string]any{
+		"symbol": symbol, "interval": interval, "candles": bars,
+		"oscillator": osc, "funding": funding,
+		"oi": oiBars, "cvd": cvdBars,
+	})
 }
 
 // handleAPIIcons serves the button icons from web/icons. Они вшиты в бинарь тем же способом,

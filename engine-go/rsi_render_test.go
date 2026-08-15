@@ -73,3 +73,26 @@ func TestRenderReportIncludesRSI(t *testing.T) {
 		t.Errorf("verdict missing:\n%s", got)
 	}
 }
+
+func TestRenderFlowBlock(t *testing.T) {
+	var b strings.Builder
+	renderFlow(&b, trading.FlowReport{
+		Available:  true,
+		Side:       "long",
+		AllowLong:  true,
+		AllowShort: false,
+		LongScore:  90,
+		ShortScore: 20,
+		Snaps: []trading.FlowSnap{{
+			TF: "1h", HasOI: true, HasCVD: true, OIChangePct: 1.2, CVDDelta: 15,
+			Quadrant: "new_longs", Note: "цена и OI растут — приходят новые лонги",
+		}},
+		Verdict: "Поток подтверждает ЛОНГ",
+	})
+	got := b.String()
+	for _, must := range []string{"Поток OI / CVD", "новые лонги", "шорт запрещён фильтром", "ЛОНГ"} {
+		if !strings.Contains(got, must) {
+			t.Errorf("renderFlow missing %q in:\n%s", must, got)
+		}
+	}
+}

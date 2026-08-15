@@ -243,6 +243,7 @@
   .chartwrap .ch .legend i.r{border-top-style:solid;border-color:var(--rose)}
   #chart{display:block;width:100%;height:min(56vh,620px);min-height:440px;border-radius:10px}
   #rsi{display:block;width:100%;height:min(28vh,280px);min-height:200px;border-radius:8px;margin-top:10px}
+  #oi,#cvd{display:none;width:100%;height:min(20vh,210px);min-height:150px;border-radius:8px;margin-top:10px}
   .chartnote{font-size:11.5px;color:var(--faint);margin-top:8px}
   .rsibar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:baseline;margin-top:10px;padding-top:10px;
     border-top:1px solid var(--edge);font-size:12.5px;color:var(--dim)}
@@ -250,6 +251,7 @@
   .rsibar .vrd{color:var(--sand)}
   .chartwrap .ch .legend i.sky{border-top-style:solid;border-color:var(--sky)}
   .chartwrap .ch .legend i.vi{border-top-style:solid;border-color:var(--violet)}
+  .chartwrap .ch .legend i.f{width:0;height:12px;border-top:none;border-left:1.5px dotted var(--violet)}
   .setups{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
   @media (max-width:1180px){.setups{grid-template-columns:1fr}}
   .setup{padding:15px 17px}
@@ -528,10 +530,14 @@
             <div class="legend">
               <span><i></i>уровни D1</span><span><i class="g"></i>лонг: вход и стоп</span><span><i class="r"></i>шорт: вход и стоп</span>
               <span><i class="sky"></i>RSI</span><span><i class="vi"></i>MFI</span>
+              <span><i class="f"></i>фандинг 5/15/30m</span>
+              <span><i class="g"></i>OI</span><span><i class="r"></i>CVD</span>
             </div>
           </div>
           <canvas id="chart"></canvas>
           <canvas id="rsi"></canvas>
+          <canvas id="oi"></canvas>
+          <canvas id="cvd"></canvas>
           <div class="rsibar" id="rsiBar" style="display:none"></div>
           <div class="chartnote" id="chartNote"></div>
         </div>
@@ -1442,8 +1448,9 @@ micBtn.addEventListener("contextmenu", e => e.preventDefault());
 
 /* ═══ разбор инструмента ═══ */
 const runBtn = $("run");
-let lastAnalyzeText = "", lastGerchik = null, lastRSI = null, lastSymbol = "";
-let chartTF = "1d", chartCandles = [], chartOsc = null;
+let lastAnalyzeText = "", lastGerchik = null, lastRSI = null, lastFlow = null, lastSymbol = "";
+let chartTF = "1d", chartCandles = [], chartOsc = null, chartFunding = [];
+let chartOI = [], chartCVD = [];
 
 async function analyze(sym) {
   sym = (sym || $("symbol").value).trim();
@@ -1469,6 +1476,7 @@ async function analyze(sym) {
           $("reportJson").style.display = "block";
           lastGerchik = ev.report.meta && ev.report.meta.gerchik || null;
           lastRSI = ev.report.meta && ev.report.meta.rsi || null;
+          lastFlow = ev.report.meta && ev.report.meta.flow || null;
           if (lastGerchik) renderSetups(lastGerchik);
           else { $("setups").style.display = "none"; $("setups").innerHTML = ""; }
           if (lastGerchik || lastRSI) loadCandles();
@@ -1557,12 +1565,22 @@ async function loadCandles() {
     if (j.error) { $("chartNote").textContent = "⚠ " + j.error; return; }
     chartCandles = j.candles || [];
     chartOsc = j.oscillator || null;
+    chartFunding = j.funding || [];
+    chartOI = j.oi || [];
+    chartCVD = j.cvd || [];
     drawChart();
     drawRSI();
+    drawFlowPane("oi", chartOI, "OI");
+    drawFlowPane("cvd", chartCVD, "CVD");
     paintRSIBar();
   } catch (e) { $("chartNote").textContent = "⚠ " + e.message; }
 }
-window.addEventListener("resize", () => { if (chartCandles.length) { drawChart(); drawRSI(); } });
+window.addEventListener("resize", () => {
+  if (!chartCandles.length) return;
+  drawChart(); drawRSI();
+  drawFlowPane("oi", chartOI, "OI");
+  drawFlowPane("cvd", chartCVD, "CVD");
+});
 
 function canvasSize(cv, minH) {
   const box = cv.getBoundingClientRect();
@@ -1625,7 +1643,8 @@ function drawChart() {
   const bars = chartCandles;
   if (!bars.length) return;
   const g = lastGerchik || {};
-  const pad = { l: 8, r: 96, t: 16, b: 22 };
+  const fund = fundingOnThisChart();
+  const pad = { l: 8, r: 96, t: fund.length ? 34 : 16, b: 22 };
   let cHi = -Infinity, cLo = Infinity;
   for (const b of bars) { cHi = Math.max(cHi, b.h); cLo = Math.min(cLo, b.l); }
   const band = (price) => {
@@ -1690,6 +1709,7 @@ function drawChart() {
     cx.fillStyle = "rgba(208,122,114,.09)";
     cx.fillRect(0, y(g.short.stop), W - pad.r, y(g.short.entry) - y(g.short.stop));
   }
+  drawFundingLines(cx, bars, cw, pad, H);
   bars.forEach((b, i) => {
     const x = pad.l + i * cw + cw / 2, up = b.c >= b.o;
     cx.strokeStyle = up ? "rgba(111,191,168,.85)" : "rgba(208,122,114,.85)";
@@ -1710,12 +1730,59 @@ function drawChart() {
     marks.filter(m => m.text).map(m => ({ y: y(m.price), text: m.text, color: m.color })),
     20, pad.t + 10, H - pad.b - 4);
   tags.forEach(t => drawTag(cx, t.text, 8, t.y, t.color));
+  drawFundingTags(cx, bars, cw, pad, W);
   const note = [];
   if (g.atr && g.atr.atr) note.push("ATR " + num(g.atr.atr) + " по " + g.atr.normal_days + " нормальным дням");
   if (g.energy != null) note.push("энергия дня " + Math.round(g.energy * 100) + "%");
   if (g.global_trend) note.push("тренд " + g.global_trend);
+  if (fund.length) note.push("фандинг: " + fund.length + " выплат на окне");
   note.push(bars.length + " свечей · Binance");
   $("chartNote").textContent = note.join(" · ");
+}
+
+function fundingOnThisChart() {
+  if (chartTF !== "5m" && chartTF !== "15m" && chartTF !== "30m") return [];
+  return chartFunding || [];
+}
+
+function utcHHMM(ms) {
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, "0");
+  return p(d.getUTCHours()) + ":" + p(d.getUTCMinutes());
+}
+
+function drawFundingLines(cx, bars, cw, pad, H) {
+  fundingOnThisChart().forEach(f => {
+    if (f.i < 0 || f.i >= bars.length) return;
+    const x = pad.l + f.i * cw + cw / 2;
+    const pos = f.rate >= 0;
+    cx.strokeStyle = pos ? "rgba(208,122,114,.38)" : "rgba(111,191,168,.38)";
+    cx.lineWidth = 1.2;
+    cx.setLineDash([3, 4]);
+    cx.beginPath(); cx.moveTo(x, pad.t); cx.lineTo(x, H - pad.b); cx.stroke();
+    cx.setLineDash([]);
+  });
+}
+
+function drawFundingTags(cx, bars, cw, pad, W) {
+  const fund = fundingOnThisChart();
+  if (!fund.length) return;
+  const labelAll = fund.length <= 6;
+  let lastX = -999, row = 0;
+  fund.forEach((f, n) => {
+    if (f.i < 0 || f.i >= bars.length) return;
+    if (!labelAll && n < fund.length - 4) return;
+    const x = pad.l + f.i * cw + cw / 2;
+    const pct = f.rate * 100;
+    const txt = "F " + utcHHMM(f.t) + " " + (pct >= 0 ? "+" : "") + pct.toFixed(3) + "%";
+    if (x - lastX < 76) row = 1 - row; else row = 0;
+    lastX = x;
+    const pos = f.rate >= 0;
+    const col = pos ? "#D07A72" : "#6FBFA8";
+    const tw = 86;
+    const tx = Math.max(pad.l, Math.min(x + 4, W - pad.r - tw));
+    drawTag(cx, txt, tx, pad.t + 12 + row * 18, col);
+  });
 }
 
 function oscMarks() {
@@ -1798,6 +1865,58 @@ function drawRSI() {
   });
 }
 
+function drawFlowPane(id, series, title) {
+  const cv = $(id);
+  if (!cv) return;
+  if (!series || !series.length || !chartCandles.length) {
+    cv.style.display = "none";
+    return;
+  }
+  cv.style.display = "block";
+  const { W, H } = canvasSize(cv, 150);
+  const cx = cv.getContext("2d");
+  cx.setTransform((window.devicePixelRatio || 1), 0, 0, (window.devicePixelRatio || 1), 0, 0);
+  cx.clearRect(0, 0, W, H);
+  const pad = { l: 8, r: 96, t: 16, b: 16 };
+  let hi = -Infinity, lo = Infinity;
+  series.forEach(b => {
+    hi = Math.max(hi, b.h, b.o, b.c);
+    lo = Math.min(lo, b.l, b.o, b.c);
+  });
+  if (!(hi > lo)) { hi += 1; lo -= 1; }
+  const padV = (hi - lo) * 0.08 || 1;
+  hi += padV; lo -= padV;
+  const y = p => pad.t + (hi - p) / (hi - lo) * (H - pad.t - pad.b);
+  const n = chartCandles.length;
+  const cw = (W - pad.l - pad.r) / n;
+  cx.font = "10px Consolas, monospace";
+  cx.fillStyle = "#65777C";
+  cx.fillText(title, 8, 12);
+  cx.fillText(tagNum(hi), W - pad.r + 8, pad.t + 4);
+  cx.fillText(tagNum(lo), W - pad.r + 8, H - pad.b);
+  if (id === "cvd") {
+    const z = y(0);
+    if (z > pad.t && z < H - pad.b) {
+      cx.strokeStyle = "rgba(255,255,255,.12)"; cx.setLineDash([4, 4]);
+      cx.beginPath(); cx.moveTo(0, z); cx.lineTo(W - pad.r, z); cx.stroke();
+      cx.setLineDash([]);
+    }
+  }
+  const byI = {};
+  series.forEach(b => { byI[b.i] = b; });
+  for (let i = 0; i < n; i++) {
+    const b = byI[i];
+    if (!b) continue;
+    const x = pad.l + i * cw + cw / 2, up = b.c >= b.o;
+    cx.strokeStyle = up ? "rgba(111,191,168,.9)" : "rgba(208,122,114,.9)";
+    cx.fillStyle = up ? "rgba(111,191,168,.75)" : "rgba(208,122,114,.75)";
+    cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(x, y(b.h)); cx.lineTo(x, y(b.l)); cx.stroke();
+    const bw = Math.max(1.6, cw * 0.62);
+    cx.fillRect(x - bw / 2, y(Math.max(b.o, b.c)), bw, Math.max(1, Math.abs(y(b.o) - y(b.c))));
+  }
+}
+
 function paintRSIBar() {
   const bar = $("rsiBar");
   if (!bar) return;
@@ -1811,10 +1930,19 @@ function paintRSIBar() {
   if (sma != null) bits.push("SMA" + (osc.sma_period || 9) + " <b>" + sma.toFixed(1) + "</b>");
   if (mfi != null) bits.push("MFI <b>" + mfi.toFixed(1) + "</b>");
   bits.push("зона <b>" + Math.round(osc.zone_low) + "–" + Math.round(osc.zone_high) + "</b> · " + (osc.regime || "—"));
-  if (lastRSI && lastRSI.verdict && chartTF === "1d") {
+  if (chartOI.length) {
+    const o = chartOI[chartOI.length - 1];
+    const d = o.o ? ((o.c - o.o) / o.o * 100) : 0;
+    bits.push("OI <b>" + (d >= 0 ? "+" : "") + d.toFixed(2) + "%</b>");
+  }
+  if (chartCVD.length) {
+    const c = chartCVD[chartCVD.length - 1];
+    bits.push("CVD Δ <b>" + (c.d >= 0 ? "+" : "") + tagNum(c.d) + "</b>");
+  }
+  if (lastFlow && lastFlow.verdict) {
+    bits.push("<span class=\"vrd\">" + esc(lastFlow.verdict) + "</span>");
+  } else if (lastRSI && lastRSI.verdict && chartTF === "1d") {
     bits.push("<span class=\"vrd\">" + esc(lastRSI.verdict) + "</span>");
-  } else {
-    bits.push("полный фильтр — в разборе ниже (считается на D1)");
   }
   bar.innerHTML = bits.join(" · ");
   bar.style.display = "flex";

@@ -37,6 +37,13 @@ func AnalyzeSymbol(symbol, market string, includeNews bool, timeframes map[strin
 	case "trend_down", "panic":
 		dir = "short"
 	}
+	// Поток (OI+CVD) выбирает сторону ТОЛЬКО когда режим сам не выбрал.
+	// В тренде он не перебивает режим — иначе две методики слились бы в среднее.
+	if dir == "wait/range" {
+		if side := FlowTiebreak(FlowSnapsFrom(timeframes)); side == "long" || side == "short" {
+			dir = side
+		}
+	}
 
 	// 3. Scoring (ported) - only if selected
 	var breakdown ScoreBreakdown

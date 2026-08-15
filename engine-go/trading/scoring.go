@@ -98,6 +98,7 @@ func scoreDirection(timeframes map[string]interface{}, plan map[string]interface
 		final += c.Score * c.Weight
 	}
 	final = clamp(final, 0, 100)
+	final, components = blendFlowScore(final, components, timeframes, dir, w)
 
 	reg := "transition"
 	if dir == "long" {

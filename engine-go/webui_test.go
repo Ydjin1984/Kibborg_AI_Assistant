@@ -203,6 +203,8 @@ func TestAnalyzePageHasRSIOscillator(t *testing.T) {
 		`id="rsi"`, `id="rsiBar"`, "drawRSI", "paintRSIBar", "chartOsc",
 		"drawPriceOscMarks", "on_price", "placeChartLabels",
 		`data-tf="5m"`, `data-tf="15m"`, `data-tf="30m"`,
+		"drawFundingLines", "drawFundingTags", "chartFunding",
+		`id="oi"`, `id="cvd"`, "drawFlowPane", "chartOI",
 	} {
 		if !strings.Contains(html, must) {
 			t.Errorf("в панели разбора нет %q — осциллятор RSI потерян", must)

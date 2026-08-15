@@ -20,22 +20,26 @@ import (
 	"kibborg/engine/trading"
 )
 
-// marketHTTP ходит только по IPv4: у api.binance.com AAAA часто отвечает, а пакеты
-// до IPv6 не доходят, и запрос висит до Timeout на «awaiting headers».
-var marketHTTP = &http.Client{
-	Timeout: 8 * time.Second,
-	Transport: &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 4 * time.Second}
-			return d.DialContext(ctx, "tcp4", addr)
+// newBinanceHTTP ходит только по IPv4: у api/fapi.binance.com AAAA часто отвечает,
+// а пакеты до IPv6 не доходят, и запрос висит на «awaiting headers».
+func newBinanceHTTP(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 4 * time.Second}
+				return d.DialContext(ctx, "tcp4", addr)
+			},
+			TLSHandshakeTimeout:   4 * time.Second,
+			ResponseHeaderTimeout: 5 * time.Second,
+			IdleConnTimeout:       30 * time.Second,
+			ForceAttemptHTTP2:     true,
 		},
-		TLSHandshakeTimeout:   4 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
-		IdleConnTimeout:       30 * time.Second,
-		ForceAttemptHTTP2:     true,
-	},
+	}
 }
+
+var marketHTTP = newBinanceHTTP(8 * time.Second)
 
 // klineHosts — публичные зеркала одного и того же /api/v3/klines. Первый живой
 // запоминается: иначе каждый ТФ (15m/1h/4h/1d) по 8 секунд упирается в мёртвый хост.
@@ -304,8 +308,13 @@ func analyzeTicker(symbol string) (trading.DecisionReport, error) {
 	// Best-effort: a spot-only coin without a perpetual simply yields nil and the analysis
 	// proceeds on candles alone.
 	extra := fetchFuturesContext(symbol)
+	attachFlowToTimeframes(symbol, timeframes)
 	report := trading.AnalyzeSymbol(symbol, "spot", false, timeframes, extra,
 		[]string{"regime_classifier", "scoring"})
+	if report.Meta == nil {
+		report.Meta = map[string]any{}
+	}
+	report.Meta["flow"] = trading.AnalyzeFlow(trading.FlowSnapsFrom(timeframes))
 
 	// Разбор по Герчику — вторая, независимая точка зрения на тот же инструмент: дневные
 	// уровни, ATR по методике курса и готовый сценарий со стопом и целью. Считается отдельно
@@ -398,6 +407,12 @@ const narrateSystemPrompt = `Ты — опытный трейдинг-анали
 - зона 40–60 — проверка здоровья тренда (отскок держать, закрепление за зоной — структура теряет силу), не вход;
 - лучший партнёр RSI — MFI (объём). Расхождение «импульс есть, денег нет» — осторожность, не кнопка входа.
 AllowLong/AllowShort в этом блоке — запрет фильтра, не приказ открыть сделку. Не предлагай вход «по RSI».
+
+В разборе может быть блок «Поток OI / CVD» — четвёртый слой, тоже независимый. OI — приходят ли новые деньги, CVD — кто агрессор (тейкер buy−sell). Квадранты уже посчитаны движком:
+- цена↑ и OI↑ = новые лонги; цена↓ и OI↑ = новые шорты;
+- цена↑ и OI↓ = закрытие шортов (не набор лонга); цена↓ и OI↓ = выход лонгов (не набор шорта);
+- CVD должен соглашаться со стороной, иначе сторона снимается.
+Если режим был боковик/переход, а поток на нескольких ТФ сошёлся — направление в шапке могло прийти из потока. Это явно написано в блоке. Если поток спорит со скорингом или Герчиком — назови расхождение, не усредняй. Не предлагай вход «по CVD».
 
 ЖЁСТКОЕ ПРАВИЛО: нельзя выдумывать НОВЫЕ числа — цены, уровни входа/стопа/тейка, проценты, которых нет в разборе. Используй только те значения, что уже приведены. Если данных для уверенного вывода мало — прямо скажи об этом.
 
@@ -506,6 +521,10 @@ func renderReport(r trading.DecisionReport) string {
 
 	if rsi, ok := r.Meta["rsi"].(trading.RSIReport); ok {
 		renderRSI(&b, rsi)
+	}
+
+	if flow, ok := r.Meta["flow"].(trading.FlowReport); ok {
+		renderFlow(&b, flow)
 	}
 
 	if regime, ok := r.Meta["regime"].(trading.RegimeResult); ok && len(regime.Reasons) > 0 {
