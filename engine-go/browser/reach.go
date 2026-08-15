@@ -189,7 +189,8 @@ func YouTubeTranscript(ctx context.Context, videoURL, lang string) (string, erro
 	defer os.RemoveAll(tmpDir)
 
 	outTpl := filepath.Join(tmpDir, "%(id)s")
-	args := append(append([]string{}, prefix...),
+	args := append(append([]string{}, prefix...), ytDlpCommonArgs()...)
+	args = append(args,
 		"--skip-download",
 		"--write-subs",
 		"--write-auto-subs",

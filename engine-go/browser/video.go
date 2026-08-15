@@ -140,6 +140,7 @@ func FetchMedia(parent context.Context, rawURL, ffmpegPath string, audioOnly boo
 	outTmpl := filepath.Join(videoOutDir, stamp+"-%(title).80B.%(ext)s")
 
 	args := append([]string{}, argsPrefix...)
+	args = append(args, ytDlpCommonArgs()...)
 	// Best video+audio, fallback to single best stream. Prefer mp4 when merging.
 	format, merge := "bv*+ba/b", "mp4"
 	if audioOnly {
@@ -194,7 +195,7 @@ func FetchMedia(parent context.Context, rawURL, ffmpegPath string, audioOnly boo
 		if len(msg) > 800 {
 			msg = msg[len(msg)-800:]
 		}
-		return VideoDownload{}, fmt.Errorf("yt-dlp: %s", msg)
+		return VideoDownload{}, fmt.Errorf("yt-dlp: %s", hintYtDlpError(msg))
 	}
 
 	// --print order: before_dl title, before_dl ext, after_move filepath (one per line).
@@ -295,7 +296,78 @@ func resolveYtDlp() (bin string, prefix []string, err error) {
 			return p, []string{"-m", "yt_dlp"}, nil
 		}
 	}
-	return "", nil, fmt.Errorf("yt-dlp не найден. Установи: pip install -U yt-dlp  (или winget install yt-dlp.yt-dlp) и перезапусти бота")
+	return "", nil, fmt.Errorf("yt-dlp не найден. Установи: pip install -U \"yt-dlp[default]\"  (или winget install yt-dlp.yt-dlp) и перезапусти бота")
+}
+
+// ytDlpCommonArgs is the YouTube-survival kit (2026): YouTube no longer serves
+// formats to a bare yt-dlp. Need a JS runtime for n-sig/PO, EJS solver scripts,
+// and non-web player clients so a 429 on the watch page is not fatal.
+func ytDlpCommonArgs() []string {
+	args := make([]string, 0, 8)
+	if rt := resolveJSRuntime(); rt != "" {
+		args = append(args, "--js-runtimes", rt)
+	}
+	// pip yt-dlp without [default] has no yt-dlp-ejs; github fetch fills the gap.
+	args = append(args, "--remote-components", "ejs:github")
+	// android first: the default web client dies on "Sign in to confirm you’re not a bot"
+	// when the watch page is 429. tv/web still add formats when they answer.
+	args = append(args, "--extractor-args", "youtube:player_client=android,tv,web")
+	if p := ytDlpCookiesFile(); p != "" {
+		args = append(args, "--cookies", p)
+	}
+	return args
+}
+
+// resolveJSRuntime returns a --js-runtimes value. Deno is yt-dlp's default, so
+// finding it means we emit nothing. Node/Bun/QuickJS must be named explicitly.
+func resolveJSRuntime() string {
+	if _, err := exec.LookPath("deno"); err == nil {
+		return ""
+	}
+	if _, err := exec.LookPath("deno.exe"); err == nil {
+		return ""
+	}
+	for _, name := range []string{"node", "node.exe", "bun", "bun.exe"} {
+		if _, err := exec.LookPath(name); err == nil {
+			// strip .exe so the flag is "node" / "bun"
+			return strings.TrimSuffix(strings.ToLower(name), ".exe")
+		}
+	}
+	for _, name := range []string{"qjs", "qjs.exe"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return "quickjs:" + p
+		}
+	}
+	return ""
+}
+
+// ytDlpCookiesFile is an optional Netscape cookies.txt. YouTube sometimes
+// demands a logged-in session; we never scrape a live browser (DPAPI/lock).
+func ytDlpCookiesFile() string {
+	if p := strings.TrimSpace(os.Getenv("KIBBORG_YTDLP_COOKIES")); p != "" && fileExists(p) {
+		return p
+	}
+	if p := filepath.Join("runtime", "yt-dlp-cookies.txt"); fileExists(p) {
+		return p
+	}
+	return ""
+}
+
+// hintYtDlpError appends a short "how to unblock YouTube" note on the known walls.
+func hintYtDlpError(msg string) string {
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(low, "sign in to confirm"),
+		strings.Contains(low, "not a bot"),
+		strings.Contains(low, "http error 429"):
+		return msg + "\n\nYouTube режет бота. Нужен Node или Deno в PATH " +
+			"(и `pip install -U \"yt-dlp[default]\"`). Если снова «не бот» — положи " +
+			"cookies.txt в runtime/yt-dlp-cookies.txt (экспорт из браузера)."
+	case strings.Contains(low, "no supported javascript runtime"),
+		strings.Contains(low, "n challenge"):
+		return msg + "\n\nДля YouTube нужен JS-рантайм: поставь Node.js (https://nodejs.org) или Deno."
+	}
+	return msg
 }
 
 // resolveFFmpeg returns an ffmpeg binary path (explicit config, PATH, or empty).

@@ -120,7 +120,10 @@ STOP_BRAIN_ON_EXIT=false
 PORT_WEB=8090
 
 # === ВИДЕО (yt-dlp + ffmpeg) ===
-# Скачивание YouTube / Instagram / TikTok: нужен yt-dlp в PATH или `pip install yt-dlp`.
+# Скачивание YouTube / Instagram / TikTok: нужен yt-dlp в PATH или `pip install -U "yt-dlp[default]"`.
+# YouTube с 2026 требует JS-рантайм (Node или Deno в PATH) — без него «Sign in to confirm you’re not a bot».
+# Если и с рантаймом режет — положи Netscape cookies в runtime/yt-dlp-cookies.txt
+# (или путь в переменной KIBBORG_YTDLP_COOKIES).
 # ffmpeg (ниже) нужен для склейки лучшего video+audio в один mp4.
 # FFMPEG=  — уже есть в секции голоса; тот же путь используется download_video.
 #
