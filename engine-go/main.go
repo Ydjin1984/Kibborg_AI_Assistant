@@ -544,7 +544,7 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 				"🔊 /tts — озвучка ответов: `auto` всегда, `ask` по запросу. `/speak` — прочитать последний ответ.\n"+
 				"🖥 /hw — тест железа: сокеты, ядра, потоки, RAM, карты, VRAM.\n"+
 				"📦 /models [запрос] — каталог GGUF Hugging Face под твоё железо. Скачать: /models get owner/repo file.gguf\n"+
-				"📊 /analyze <тикер> — детерминированный разбор по данным Binance (режим, скор, тренды). Пример: /analyze BTC\n"+
+				"📊 /analyze <тикер> — детерминированный разбор по данным Binance (режим, скор, Герчик, RSI-фильтр). Пример: /analyze BTC\n"+
 				"📈 /chart — торговый разбор графика: отправь команду, затем пришли скриншот или файл графика.\n"+
 				"📐 /size — размер позиции по риску. Пример: /size BTC entry=50000 stop=49000 tp=53000 risk=1.5 lev=10\n"+
 				"📝 /log — записать сделку в журнал · /journal — статистика и список · /close <id> <цена> — закрыть сделку\n"+
@@ -582,7 +582,7 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 	case isAnalyze:
 		if analyzeArg == "" {
 			sendTelegramMessage(botAPI, chatID,
-				"📊 Укажи тикер: /analyze BTC (или ETH, SOL, BTCUSDT…). Разбор идёт по свечам Binance 15m/1h/4h.\n"+
+				"📊 Укажи тикер: /analyze BTC (или ETH, SOL, BTCUSDT…). Разбор идёт по свечам Binance 15m/1h/4h + дневки (Герчик и RSI).\n"+
 					"Для разбора СКРИНШОТА графика используй /chart.")
 			return
 		}

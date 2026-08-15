@@ -241,8 +241,15 @@
   .chartwrap .ch .legend i{width:14px;height:0;border-top:1.5px dashed var(--sand);display:inline-block}
   .chartwrap .ch .legend i.g{border-top-style:solid;border-color:var(--jade)}
   .chartwrap .ch .legend i.r{border-top-style:solid;border-color:var(--rose)}
-  #chart{display:block;width:100%;height:290px;border-radius:10px}
+  #chart{display:block;width:100%;height:min(56vh,620px);min-height:440px;border-radius:10px}
+  #rsi{display:block;width:100%;height:min(28vh,280px);min-height:200px;border-radius:8px;margin-top:10px}
   .chartnote{font-size:11.5px;color:var(--faint);margin-top:8px}
+  .rsibar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:baseline;margin-top:10px;padding-top:10px;
+    border-top:1px solid var(--edge);font-size:12.5px;color:var(--dim)}
+  .rsibar b{font-weight:600;color:var(--text);font-family:Consolas,monospace}
+  .rsibar .vrd{color:var(--sand)}
+  .chartwrap .ch .legend i.sky{border-top-style:solid;border-color:var(--sky)}
+  .chartwrap .ch .legend i.vi{border-top-style:solid;border-color:var(--violet)}
   .setups{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
   @media (max-width:1180px){.setups{grid-template-columns:1fr}}
   .setup{padding:15px 17px}
@@ -511,14 +518,21 @@
           <div class="ch">
             <span class="lbl" id="chartTitle">График</span>
             <div class="quick" id="tfs">
-              <button class="qb" type="button" data-tf="1h">1H</button><button class="qb" type="button" data-tf="4h">4H</button>
+              <button class="qb" type="button" data-tf="5m">5M</button>
+              <button class="qb" type="button" data-tf="15m">15M</button>
+              <button class="qb" type="button" data-tf="30m">30M</button>
+              <button class="qb" type="button" data-tf="1h">1H</button>
+              <button class="qb" type="button" data-tf="4h">4H</button>
               <button class="qb on" type="button" data-tf="1d">D1</button>
             </div>
             <div class="legend">
               <span><i></i>уровни D1</span><span><i class="g"></i>лонг: вход и стоп</span><span><i class="r"></i>шорт: вход и стоп</span>
+              <span><i class="sky"></i>RSI</span><span><i class="vi"></i>MFI</span>
             </div>
           </div>
           <canvas id="chart"></canvas>
+          <canvas id="rsi"></canvas>
+          <div class="rsibar" id="rsiBar" style="display:none"></div>
           <div class="chartnote" id="chartNote"></div>
         </div>
 
@@ -1428,7 +1442,8 @@ micBtn.addEventListener("contextmenu", e => e.preventDefault());
 
 /* ═══ разбор инструмента ═══ */
 const runBtn = $("run");
-let lastAnalyzeText = "", lastGerchik = null, lastSymbol = "", chartTF = "1d", chartCandles = [];
+let lastAnalyzeText = "", lastGerchik = null, lastRSI = null, lastSymbol = "";
+let chartTF = "1d", chartCandles = [], chartOsc = null;
 
 async function analyze(sym) {
   sym = (sym || $("symbol").value).trim();
@@ -1452,8 +1467,11 @@ async function analyze(sym) {
         if (ev.report) {
           $("reportJsonPre").textContent = JSON.stringify(ev.report, null, 2);
           $("reportJson").style.display = "block";
-          const g = ev.report.meta && ev.report.meta.gerchik;
-          if (g) { lastGerchik = g; renderSetups(g); loadCandles(); }
+          lastGerchik = ev.report.meta && ev.report.meta.gerchik || null;
+          lastRSI = ev.report.meta && ev.report.meta.rsi || null;
+          if (lastGerchik) renderSetups(lastGerchik);
+          else { $("setups").style.display = "none"; $("setups").innerHTML = ""; }
+          if (lastGerchik || lastRSI) loadCandles();
         }
       }
       if (ev.narration !== undefined && !ev.done) {
@@ -1538,62 +1556,137 @@ async function loadCandles() {
       "&tf=" + chartTF + "&limit=120")).json();
     if (j.error) { $("chartNote").textContent = "⚠ " + j.error; return; }
     chartCandles = j.candles || [];
+    chartOsc = j.oscillator || null;
     drawChart();
+    drawRSI();
+    paintRSIBar();
   } catch (e) { $("chartNote").textContent = "⚠ " + e.message; }
 }
-window.addEventListener("resize", () => { if (chartCandles.length) drawChart(); });
+window.addEventListener("resize", () => { if (chartCandles.length) { drawChart(); drawRSI(); } });
+
+function canvasSize(cv, minH) {
+  const box = cv.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(320, Math.floor(box.width));
+  const H = Math.max(minH, Math.floor(box.height));
+  cv.width = W * dpr; cv.height = H * dpr;
+  return { W, H, dpr };
+}
+
+function tagNum(v) {
+  const a = Math.abs(v);
+  const d = a >= 1000 ? 1 : a >= 100 ? 2 : a >= 1 ? 4 : 6;
+  return Number(v).toLocaleString("ru-RU", { maximumFractionDigits: d });
+}
+
+// Подписи уровней не должны садиться друг на друга: на узком диапазоне две цены
+// оказываются в одних пикселях, и «сопротивление» затирает «лонг».
+function placeChartLabels(items, minGap, top, bottom) {
+  items.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < items.length; i++) {
+    if (items[i].y - items[i - 1].y < minGap) items[i].y = items[i - 1].y + minGap;
+  }
+  if (items.length && items[items.length - 1].y > bottom) {
+    const shift = items[items.length - 1].y - bottom;
+    for (const it of items) it.y -= shift;
+  }
+  if (items.length && items[0].y < top) {
+    const shift = top - items[0].y;
+    for (const it of items) it.y += shift;
+  }
+  for (let i = 1; i < items.length; i++) {
+    if (items[i].y - items[i - 1].y < minGap) items[i].y = items[i - 1].y + minGap;
+  }
+  return items;
+}
+
+function drawTag(cx, text, x, y, color) {
+  cx.font = "11px Consolas, monospace";
+  const tw = cx.measureText(text).width, h = 17, padX = 6;
+  cx.fillStyle = "rgba(8,11,16,.9)";
+  cx.strokeStyle = color;
+  cx.lineWidth = 1;
+  const left = x, top = y - 12, w = tw + padX * 2;
+  cx.beginPath();
+  if (cx.roundRect) cx.roundRect(left, top, w, h, 4);
+  else cx.rect(left, top, w, h);
+  cx.fill(); cx.stroke();
+  cx.fillStyle = color;
+  cx.fillText(text, x + padX, y);
+}
 
 function drawChart() {
-  const cv = $("chart"), box = cv.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const W = Math.max(320, Math.floor(box.width)), H = 290;
-  cv.width = W * dpr; cv.height = H * dpr;
-  cv.style.height = H + "px";
+  const cv = $("chart");
+  const { W, H } = canvasSize(cv, 440);
   const cx = cv.getContext("2d");
-  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx.setTransform((window.devicePixelRatio || 1), 0, 0, (window.devicePixelRatio || 1), 0, 0);
   cx.clearRect(0, 0, W, H);
 
   const bars = chartCandles;
   if (!bars.length) return;
   const g = lastGerchik || {};
-  const pad = { l: 4, r: 92, t: 12, b: 20 };
+  const pad = { l: 8, r: 96, t: 16, b: 22 };
+  let cHi = -Infinity, cLo = Infinity;
+  for (const b of bars) { cHi = Math.max(cHi, b.h); cLo = Math.min(cLo, b.l); }
+  const band = (price) => {
+    if (!price) return false;
+    if (chartTF === "1d") return true;
+    const slack = (cHi - cLo) * 0.1 || price * 0.02;
+    return price >= cLo - slack && price <= cHi + slack;
+  };
   const marks = [];
-  const push = (price, color, text, dash) => { if (price) marks.push({ price, color, text, dash }); };
-  if (chartTF === "1d") {
-    (g.levels || []).slice(0, 8).forEach(l => push(l.price, "rgba(216,179,122,.5)", "", true));
-    if (g.support) push(g.support.price, "#D8B37A", "поддержка " + num(g.support.price), true);
-    if (g.resistance) push(g.resistance.price, "#D8B37A", "сопротивление " + num(g.resistance.price), true);
-    if (g.long && g.long.entry) {
-      push(g.long.entry, "#6FBFA8", "лонг " + num(g.long.entry), false);
-      push(g.long.stop, "rgba(111,191,168,.55)", "", true);
-    }
-    if (g.short && g.short.entry) {
-      push(g.short.entry, "#D07A72", "шорт " + num(g.short.entry), false);
-      push(g.short.stop, "rgba(208,122,114,.55)", "", true);
-    }
+  const push = (price, color, text, dash) => {
+    if (!band(price)) return;
+    marks.push({ price, color, text: text || "", dash: !!dash });
+  };
+  const labeled = {};
+  (g.levels || []).slice(0, 8).forEach(l => push(l.price, "rgba(216,179,122,.4)", "", true));
+  if (g.support && band(g.support.price)) {
+    labeled.sup = g.support.price;
+    push(g.support.price, "#D8B37A", "подд. " + tagNum(g.support.price), true);
   }
-  let hi = -Infinity, lo = Infinity;
-  for (const b of bars) { hi = Math.max(hi, b.h); lo = Math.min(lo, b.l); }
+  if (g.resistance && band(g.resistance.price)) {
+    labeled.res = g.resistance.price;
+    push(g.resistance.price, "#D8B37A", "сопр. " + tagNum(g.resistance.price), true);
+  }
+  if (g.long && g.long.entry && band(g.long.entry)) {
+    const same = labeled.sup && Math.abs(g.long.entry - labeled.sup) / g.long.entry < 0.001;
+    if (same) {
+      marks.forEach(m => { if (m.text.indexOf("подд.") === 0) m.text = "лонг / подд. " + tagNum(g.long.entry); });
+    } else {
+      push(g.long.entry, "#6FBFA8", "лонг " + tagNum(g.long.entry), false);
+    }
+    if (band(g.long.stop)) push(g.long.stop, "rgba(111,191,168,.45)", "", true);
+  }
+  if (g.short && g.short.entry && band(g.short.entry)) {
+    const same = labeled.res && Math.abs(g.short.entry - labeled.res) / g.short.entry < 0.001;
+    if (same) {
+      marks.forEach(m => { if (m.text.indexOf("сопр.") === 0) m.text = "шорт / сопр. " + tagNum(g.short.entry); });
+    } else {
+      push(g.short.entry, "#D07A72", "шорт " + tagNum(g.short.entry), false);
+    }
+    if (band(g.short.stop)) push(g.short.stop, "rgba(208,122,114,.45)", "", true);
+  }
+  let hi = cHi, lo = cLo;
   for (const m of marks) { hi = Math.max(hi, m.price); lo = Math.min(lo, m.price); }
-  const padV = (hi - lo) * 0.06 || 1;
+  const padV = (hi - lo) * 0.07 || 1;
   hi += padV; lo -= padV;
   const y = p => pad.t + (hi - p) / (hi - lo) * (H - pad.t - pad.b);
   const cw = (W - pad.l - pad.r) / bars.length;
 
   cx.font = "11px Consolas, monospace";
-  for (let i = 0; i <= 4; i++) {
-    const yy = pad.t + i * (H - pad.t - pad.b) / 4;
+  for (let i = 0; i <= 5; i++) {
+    const yy = pad.t + i * (H - pad.t - pad.b) / 5;
     cx.strokeStyle = "rgba(255,255,255,.05)"; cx.lineWidth = 1;
     cx.beginPath(); cx.moveTo(0, yy); cx.lineTo(W - pad.r, yy); cx.stroke();
     cx.fillStyle = "#65777C";
-    cx.fillText(num(hi - (hi - lo) * i / 4), W - pad.r + 8, yy + 4);
+    cx.fillText(tagNum(hi - (hi - lo) * i / 5), W - pad.r + 8, yy + 4);
   }
-  // зоны риска: где стоит стоп относительно входа
-  if (chartTF === "1d" && g.long && g.long.entry && g.long.stop) {
+  if (g.long && g.long.entry && g.long.stop && band(g.long.entry)) {
     cx.fillStyle = "rgba(111,191,168,.09)";
     cx.fillRect(0, y(g.long.entry), W - pad.r, y(g.long.stop) - y(g.long.entry));
   }
-  if (chartTF === "1d" && g.short && g.short.entry && g.short.stop) {
+  if (g.short && g.short.entry && g.short.stop && band(g.short.entry)) {
     cx.fillStyle = "rgba(208,122,114,.09)";
     cx.fillRect(0, y(g.short.stop), W - pad.r, y(g.short.entry) - y(g.short.stop));
   }
@@ -1603,22 +1696,128 @@ function drawChart() {
     cx.fillStyle = up ? "rgba(111,191,168,.7)" : "rgba(208,122,114,.7)";
     cx.lineWidth = 1;
     cx.beginPath(); cx.moveTo(x, y(b.h)); cx.lineTo(x, y(b.l)); cx.stroke();
-    const bw = Math.max(1.5, cw * 0.6);
+    const bw = Math.max(1.8, cw * 0.62);
     cx.fillRect(x - bw / 2, y(Math.max(b.o, b.c)), bw, Math.max(1, Math.abs(y(b.o) - y(b.c))));
   });
+  drawPriceOscMarks(cx, bars, cw, pad, y);
   for (const m of marks) {
-    cx.strokeStyle = m.color; cx.lineWidth = m.dash ? 1 : 1.4;
+    cx.strokeStyle = m.color; cx.lineWidth = m.dash ? 1 : 1.5;
     cx.setLineDash(m.dash ? [6, 5] : []);
     cx.beginPath(); cx.moveTo(0, y(m.price)); cx.lineTo(W - pad.r, y(m.price)); cx.stroke();
     cx.setLineDash([]);
-    if (m.text) { cx.fillStyle = m.color; cx.fillText(m.text, 6, y(m.price) - 5); }
   }
+  const tags = placeChartLabels(
+    marks.filter(m => m.text).map(m => ({ y: y(m.price), text: m.text, color: m.color })),
+    20, pad.t + 10, H - pad.b - 4);
+  tags.forEach(t => drawTag(cx, t.text, 8, t.y, t.color));
   const note = [];
   if (g.atr && g.atr.atr) note.push("ATR " + num(g.atr.atr) + " по " + g.atr.normal_days + " нормальным дням");
   if (g.energy != null) note.push("энергия дня " + Math.round(g.energy * 100) + "%");
   if (g.global_trend) note.push("тренд " + g.global_trend);
   note.push(bars.length + " свечей · Binance");
   $("chartNote").textContent = note.join(" · ");
+}
+
+function oscMarks() {
+  return (chartOsc && chartOsc.marks) || [];
+}
+
+function drawPriceOscMarks(cx, bars, cw, pad, y) {
+  oscMarks().forEach(m => {
+    if (!m.on_price || m.i < 0 || m.i >= bars.length) return;
+    const x = pad.l + m.i * cw + cw / 2;
+    const bear = m.kind.indexOf("bear") >= 0 || m.kind.indexOf("70_down") >= 0 || m.kind.indexOf("40_down") >= 0;
+    const py = m.kind.indexOf("div_bull") >= 0 ? y(bars[m.i].l) + 7 : y(bars[m.i].h) - 7;
+    cx.fillStyle = bear ? "#D07A72" : "#6FBFA8";
+    cx.beginPath();
+    if (m.kind.indexOf("div") >= 0) {
+      cx.moveTo(x, py); cx.lineTo(x - 4, py + (bear ? 6 : -6)); cx.lineTo(x + 4, py + (bear ? 6 : -6));
+    } else {
+      cx.arc(x, py, 3.2, 0, Math.PI * 2);
+    }
+    cx.fill();
+  });
+}
+
+function drawRSI() {
+  const cv = $("rsi");
+  if (!cv || !chartOsc || !chartCandles.length) return;
+  const { W, H } = canvasSize(cv, 200);
+  const cx = cv.getContext("2d");
+  cx.setTransform((window.devicePixelRatio || 1), 0, 0, (window.devicePixelRatio || 1), 0, 0);
+  cx.clearRect(0, 0, W, H);
+  const pad = { l: 8, r: 96, t: 14, b: 16 };
+  const y = v => pad.t + (100 - v) / 100 * (H - pad.t - pad.b);
+  const n = chartCandles.length;
+  const cw = (W - pad.l - pad.r) / n;
+  const zoneLo = chartOsc.zone_low != null ? chartOsc.zone_low : 30;
+  const zoneHi = chartOsc.zone_high != null ? chartOsc.zone_high : 70;
+  cx.fillStyle = "rgba(127,169,201,.07)";
+  cx.fillRect(0, y(zoneHi), W - pad.r, y(zoneLo) - y(zoneHi));
+  if (chartOsc.regime === "trend_up") {
+    cx.fillStyle = "rgba(111,191,168,.10)";
+    cx.fillRect(0, y(50), W - pad.r, y(40) - y(50));
+  } else if (chartOsc.regime === "trend_down") {
+    cx.fillStyle = "rgba(208,122,114,.10)";
+    cx.fillRect(0, y(60), W - pad.r, y(50) - y(60));
+  }
+  const guides = [
+    [70, "rgba(208,122,114,.45)"], [50, "rgba(255,255,255,.12)"], [30, "rgba(111,191,168,.45)"],
+    [zoneLo, "rgba(216,179,122,.28)"], [zoneHi, "rgba(216,179,122,.28)"]
+  ];
+  cx.font = "10px Consolas, monospace";
+  guides.forEach(([lv, col]) => {
+    cx.strokeStyle = col; cx.lineWidth = 1; cx.setLineDash(lv === 50 ? [] : [4, 4]);
+    cx.beginPath(); cx.moveTo(0, y(lv)); cx.lineTo(W - pad.r, y(lv)); cx.stroke();
+    cx.setLineDash([]);
+    cx.fillStyle = "#65777C";
+    cx.fillText(String(lv), W - pad.r + 8, y(lv) + 3);
+  });
+  const plot = (arr, from, color, dash, width) => {
+    if (!arr || from < 0) return;
+    cx.strokeStyle = color; cx.lineWidth = width; cx.setLineDash(dash || []);
+    cx.beginPath();
+    let started = false;
+    for (let i = from; i < n && i < arr.length; i++) {
+      const x = pad.l + i * cw + cw / 2;
+      if (!started) { cx.moveTo(x, y(arr[i])); started = true; }
+      else cx.lineTo(x, y(arr[i]));
+    }
+    cx.stroke();
+    cx.setLineDash([]);
+  };
+  plot(chartOsc.mfi, chartOsc.mfi_from, "rgba(155,143,208,.85)", [], 1.15);
+  plot(chartOsc.sma, chartOsc.sma_from, "rgba(216,179,122,.9)", [5, 4], 1);
+  plot(chartOsc.rsi, chartOsc.from, "#7FA9C9", [], 1.6);
+  oscMarks().forEach(m => {
+    if (m.i < 0 || m.i >= n) return;
+    const x = pad.l + m.i * cw + cw / 2;
+    const noisy = m.kind.indexOf("noise") >= 0;
+    cx.fillStyle = noisy ? "rgba(216,179,122,.7)" : (m.kind.indexOf("bear") >= 0 || m.kind.indexOf("70_down") >= 0 ? "#D07A72" : "#6FBFA8");
+    cx.beginPath(); cx.arc(x, y(m.rsi), noisy ? 2.2 : 3, 0, Math.PI * 2); cx.fill();
+  });
+}
+
+function paintRSIBar() {
+  const bar = $("rsiBar");
+  if (!bar) return;
+  const osc = chartOsc;
+  if (!osc || osc.from < 0 || !osc.rsi || !osc.rsi.length) { bar.style.display = "none"; return; }
+  const last = osc.rsi[osc.rsi.length - 1];
+  const mfi = osc.mfi_from >= 0 ? osc.mfi[osc.mfi.length - 1] : null;
+  const sma = osc.sma_from >= 0 ? osc.sma[osc.sma.length - 1] : null;
+  const bits = [];
+  bits.push("RSI <b>" + last.toFixed(1) + "</b>");
+  if (sma != null) bits.push("SMA" + (osc.sma_period || 9) + " <b>" + sma.toFixed(1) + "</b>");
+  if (mfi != null) bits.push("MFI <b>" + mfi.toFixed(1) + "</b>");
+  bits.push("зона <b>" + Math.round(osc.zone_low) + "–" + Math.round(osc.zone_high) + "</b> · " + (osc.regime || "—"));
+  if (lastRSI && lastRSI.verdict && chartTF === "1d") {
+    bits.push("<span class=\"vrd\">" + esc(lastRSI.verdict) + "</span>");
+  } else {
+    bits.push("полный фильтр — в разборе ниже (считается на D1)");
+  }
+  bar.innerHTML = bits.join(" · ");
+  bar.style.display = "flex";
 }
 
 /* ═══ агент и видео ═══ */
@@ -1875,7 +2074,7 @@ async function restoreHistory() {
       reply(renderMd(
         "Панель на связи. Умею то же, что и в Telegram: искать, читать сайты, работать в терминале и с файлами, " +
         "видеть экран, разбирать **видео**, **PDF** и картинки, скачивать ролики и считать разбор инструмента " +
-        "двумя методиками сразу.\n\n" +
+        "по скорингу, Герчику и RSI-фильтру.\n\n" +
         "- напиши задачу словами — инструменты подберу сам\n" +
         "- перетащи файл в окно или нажми скрепку\n" +
         "- зажми микрофон и скажи голосом\n" +

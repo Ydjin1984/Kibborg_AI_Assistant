@@ -195,6 +195,21 @@ func TestWebHistoryAndArtifacts(t *testing.T) {
 	}
 }
 
+// Осциллятор RSI обязан быть на вкладке разбора: панель без #rsi снова покажет только свечи
+// и спрячет фильтр, ради которого слой и добавляли.
+func TestAnalyzePageHasRSIOscillator(t *testing.T) {
+	html := string(webIndexHTML)
+	for _, must := range []string{
+		`id="rsi"`, `id="rsiBar"`, "drawRSI", "paintRSIBar", "chartOsc",
+		"drawPriceOscMarks", "on_price", "placeChartLabels",
+		`data-tf="5m"`, `data-tf="15m"`, `data-tf="30m"`,
+	} {
+		if !strings.Contains(html, must) {
+			t.Errorf("в панели разбора нет %q — осциллятор RSI потерян", must)
+		}
+	}
+}
+
 // Свечи для графика тянутся с биржи, поэтому проверяем ровно то, что не ходит в сеть:
 // таймфрейм берётся из белого списка, а пустой тикер отбивается до запроса.
 func TestWebCandlesValidation(t *testing.T) {

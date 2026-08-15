@@ -29,9 +29,22 @@ func EMA(values []float64, period int) []float64 {
 // RSI computes Wilder's Relative Strength Index over closes and returns the latest value.
 // Not enough data → neutral 50 (never a made-up extreme).
 func RSI(closes []float64, period int) float64 {
-	if period <= 0 || len(closes) < period+1 {
+	s, from := RSISeries(closes, period)
+	if s == nil || from < 0 || from >= len(s) {
 		return 50
 	}
+	return s[len(s)-1]
+}
+
+// RSISeries returns the full Wilder RSI aligned with closes. Values before `from` are 0
+// and must not be read — a real RSI can be 0, so the caller uses `from`, not "nonzero".
+// Insufficient data → (nil, -1).
+func RSISeries(closes []float64, period int) ([]float64, int) {
+	if period <= 0 || len(closes) < period+1 {
+		return nil, -1
+	}
+	n := len(closes)
+	out := make([]float64, n)
 	var gain, loss float64
 	for i := 1; i <= period; i++ {
 		d := closes[i] - closes[i-1]
@@ -43,7 +56,8 @@ func RSI(closes []float64, period int) float64 {
 	}
 	avgGain := gain / float64(period)
 	avgLoss := loss / float64(period)
-	for i := period + 1; i < len(closes); i++ {
+	out[period] = rsiFromAvg(avgGain, avgLoss)
+	for i := period + 1; i < n; i++ {
 		d := closes[i] - closes[i-1]
 		g, l := 0.0, 0.0
 		if d > 0 {
@@ -53,15 +67,19 @@ func RSI(closes []float64, period int) float64 {
 		}
 		avgGain = (avgGain*float64(period-1) + g) / float64(period)
 		avgLoss = (avgLoss*float64(period-1) + l) / float64(period)
+		out[i] = rsiFromAvg(avgGain, avgLoss)
 	}
+	return out, period
+}
+
+func rsiFromAvg(avgGain, avgLoss float64) float64 {
 	if avgLoss == 0 {
 		if avgGain == 0 {
 			return 50
 		}
 		return 100
 	}
-	rs := avgGain / avgLoss
-	return 100 - 100/(1+rs)
+	return 100 - 100/(1+avgGain/avgLoss)
 }
 
 // ATR computes Wilder's Average True Range and returns the latest value (0 = no data).

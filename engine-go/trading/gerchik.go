@@ -21,8 +21,8 @@ import (
 // Bar — дневная свеча. Open нужен для правила 75% (энергия дня отсчитывается от открытия),
 // Time — для свежести уровня; поэтому обычного candle из market.go тут мало.
 type Bar struct {
-	Time                   time.Time
-	Open, High, Low, Close float64
+	Time                           time.Time
+	Open, High, Low, Close, Volume float64
 }
 
 const (

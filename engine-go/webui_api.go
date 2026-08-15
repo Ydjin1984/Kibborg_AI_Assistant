@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"kibborg/engine/trading"
 )
 
 //go:embed web/icons/*.svg
@@ -42,7 +44,9 @@ const (
 
 // allowedIntervals — таймфреймы, которые панель может попросить. Белый список, а не проверка
 // формата: строка из запроса иначе уезжает в URL биржи как есть.
-var allowedIntervals = map[string]bool{"15m": true, "1h": true, "4h": true, "1d": true}
+var allowedIntervals = map[string]bool{
+	"5m": true, "15m": true, "30m": true, "1h": true, "4h": true, "1d": true,
+}
 
 // handleAPIHistory returns the web chat's dialog so a page reload restores it.
 // Раньше история жила только в DOM: F5 стирал переписку с экрана, хотя на сервере она
@@ -189,7 +193,7 @@ func handleAPICandles(w http.ResponseWriter, r *http.Request) {
 		interval = "1d"
 	}
 	if !allowedIntervals[interval] {
-		http.Error(w, "таймфрейм не поддерживается: 15m, 1h, 4h, 1d", http.StatusBadRequest)
+		http.Error(w, "таймфрейм не поддерживается: 5m, 15m, 30m, 1h, 4h, 1d", http.StatusBadRequest)
 		return
 	}
 	limit := candleDefault
@@ -231,7 +235,19 @@ func handleAPICandles(w http.ResponseWriter, r *http.Request) {
 			V: anyToF(k[5]),
 		})
 	}
-	writeJSON(w, map[string]any{"symbol": symbol, "interval": interval, "candles": bars})
+	// Формирующаяся свеча на графике нужна (последний тик), но RSI по ней плывёт.
+	// Считаем осциллятор по всем пришедшим барам: панель рисует «сейчас», а разбор
+	// /analyze по-прежнему берёт только закрытые — два слоя не смешиваются.
+	n := len(bars)
+	highs := make([]float64, n)
+	lows := make([]float64, n)
+	closes := make([]float64, n)
+	vols := make([]float64, n)
+	for i, b := range bars {
+		highs[i], lows[i], closes[i], vols[i] = b.H, b.L, b.C, b.V
+	}
+	osc := trading.BuildOscillatorPane(highs, lows, closes, vols, trading.TrendLabel(closes), 14, 9, 0, 0, 0)
+	writeJSON(w, map[string]any{"symbol": symbol, "interval": interval, "candles": bars, "oscillator": osc})
 }
 
 // handleAPIIcons serves the button icons from web/icons. Они вшиты в бинарь тем же способом,
