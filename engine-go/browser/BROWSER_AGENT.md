@@ -43,7 +43,7 @@ browser/
 
 Инструменты (имена совпадают с ТЗ, плюс веб-поиск):
 
-- Поиск: `web_search` (DuckDuckGo, keyless, не требует открытого Chrome)
+- Поиск: `web_search` (Яндекс + Google через Chrome; HTTP: Bing, DuckDuckGo)
 - Навигация/вкладки: `open_url`, `close_page`, `switch_tab`, `list_tabs`
 - Действия: `click_element`, `type_text`, `scroll_page`, `select_option`,
   `submit_form`, `upload_file`, `drag_element`

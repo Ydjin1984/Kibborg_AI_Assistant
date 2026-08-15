@@ -26,7 +26,7 @@ import (
 // ToolsWeb is the `web` pack: search + read the open internet, no Chrome needed.
 func (s *Session) ToolsWeb() []ToolSpec {
 	return []ToolSpec{
-		tool("web_search", "Поиск в вебе.", obj(props{
+		tool("web_search", "Поиск: Яндекс+Google (+Bing/DDG).", obj(props{
 			"query": str(""),
 			"limit": intp(""),
 		}, "query")),
@@ -280,18 +280,18 @@ func (s *Session) Dispatch(ctx context.Context, name string, args map[string]any
 
 	// ---- reach ----
 	case "web_search":
-		results, err := WebSearch(ctx, argStr(args, "query"), argInt(args, "limit", 10))
+		results, err := s.WebSearch(ctx, argStr(args, "query"), argInt(args, "limit", 10))
 		if err != nil {
 			return "", err
 		}
 		if len(results) == 0 {
 			return "Поиск не дал результатов.", nil
 		}
-		return toJSON(results), nil
+		return formatSearchWithHarvest(ctx, s, results), nil
 	case "semantic_search":
-		return SemanticSearch(ctx, argStr(args, "query"), argInt(args, "limit", 5))
+		return SemanticSearch(ctx, argStr(args, "query"), argInt(args, "limit", 5), s)
 	case "read_url":
-		return ReadURL(ctx, argStr(args, "url"))
+		return ReadURLChrome(ctx, argStr(args, "url"), s)
 	case "http_get":
 		return HTTPGet(ctx, argStr(args, "url"))
 	case "youtube_transcript":

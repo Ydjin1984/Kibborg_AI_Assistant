@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +36,10 @@ var reachHTTP = &http.Client{Timeout: reachHTTPTimeout}
 // ReadURL fetches a clean Markdown/text rendering of any public URL via Jina Reader
 // (zero API key). Falls back to a plain HTTP GET + light tag strip if Jina fails.
 func ReadURL(ctx context.Context, rawURL string) (string, error) {
+	return ReadURLChrome(ctx, rawURL, nil)
+}
+
+func ReadURLChrome(ctx context.Context, rawURL string, chrome *Session) (string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return "", fmt.Errorf("нужен url")
@@ -52,7 +59,8 @@ func ReadURL(ctx context.Context, rawURL string) (string, error) {
 		"X-Return-Format": "markdown",
 	})
 	if err == nil && status == 200 && strings.TrimSpace(body) != "" {
-		return capStr(fmt.Sprintf("source=jina\nurl=%s\n\n%s", safe, body), maxReachBody), nil
+		out := capStr(fmt.Sprintf("source=jina\nurl=%s\n\n%s", safe, body), maxReachBody)
+		return maybeChromeText(chrome, safe, out), nil
 	}
 	if ctx != nil && ctx.Err() != nil {
 		return "", ctx.Err()
@@ -63,13 +71,30 @@ func ReadURL(ctx context.Context, rawURL string) (string, error) {
 		"Accept":     "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
 	})
 	if err != nil {
+		if chrome != nil {
+			if t, cerr := chrome.pageText(safe); cerr == nil && strings.TrimSpace(t) != "" {
+				return capStr(fmt.Sprintf("source=chrome\nurl=%s\n\n%s", safe, t), maxReachBody), nil
+			}
+		}
 		return "", fmt.Errorf("не удалось прочитать URL (jina status=%d): %w", status, err)
 	}
 	if status != 200 {
 		return "", fmt.Errorf("HTTP %d при чтении %s", status, safe)
 	}
 	text := stripHTMLLight(body)
-	return capStr(fmt.Sprintf("source=direct\nurl=%s\n\n%s", safe, text), maxReachBody), nil
+	out := capStr(fmt.Sprintf("source=direct\nurl=%s\n\n%s", safe, text), maxReachBody)
+	return maybeChromeText(chrome, safe, out), nil
+}
+
+func maybeChromeText(chrome *Session, pageURL, current string) string {
+	if chrome == nil || !looksLikePageShell(current) {
+		return current
+	}
+	t, err := chrome.pageText(pageURL)
+	if err != nil || looksLikePageShell(t) {
+		return current + "\n\n(страница почти без текста — JS-оболочка; возьми другую статью)"
+	}
+	return capStr(fmt.Sprintf("source=chrome\nurl=%s\n\n%s", pageURL, t), maxReachBody)
 }
 
 // HTTPGet performs a raw GET against a public URL (for APIs/JSON). Prefer read_url for articles.
@@ -95,8 +120,9 @@ func HTTPGet(ctx context.Context, rawURL string) (string, error) {
 	return capStr(fmt.Sprintf("status=%d\nurl=%s\n\n%s", status, safe, body), maxReachBody), nil
 }
 
-// SemanticSearch tries Exa via mcporter (Agent Reach path). Falls back to DuckDuckGo web_search.
-func SemanticSearch(ctx context.Context, query string, limit int) (string, error) {
+// SemanticSearch tries Exa via mcporter (Agent Reach path). Falls back to WebSearch
+// (Яндекс+Google+Bing/DDG).
+func SemanticSearch(ctx context.Context, query string, limit int, chrome *Session) (string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return "", fmt.Errorf("пустой query")
@@ -119,14 +145,14 @@ func SemanticSearch(ctx context.Context, query string, limit int) (string, error
 		}
 	}
 
-	results, err := WebSearch(ctx, query, limit)
+	results, err := webSearch(ctx, query, limit, chrome)
 	if err != nil {
 		return "", err
 	}
 	if len(results) == 0 {
-		return "source=duckduckgo\nПоиск не дал результатов.", nil
+		return "Поиск не дал результатов.", nil
 	}
-	return "source=duckduckgo\n" + toJSON(results), nil
+	return toJSON(results), nil
 }
 
 // AgentReachDoctor runs `agent-reach doctor` (or --json) if the CLI is installed.
@@ -296,6 +322,156 @@ func httpGetText(ctx context.Context, raw string, headers map[string]string) (bo
 		s = capStr(s, maxReachBody)
 	}
 	return s, resp.StatusCode, nil
+}
+
+func looksLikePageShell(s string) bool {
+	// drop our source= header so a fat script page isn't saved by the first lines
+	if i := strings.Index(s, "\n\n"); i > 0 && strings.HasPrefix(s, "source=") {
+		s = s[i+2:]
+	}
+	letters := 0
+	for _, r := range s {
+		if r >= 'A' && r <= 'z' || r >= 'А' && r <= 'я' || r == 'ё' || r == 'Ё' {
+			letters++
+		}
+	}
+	if letters < 220 {
+		return true
+	}
+	low := strings.ToLower(s)
+	scriptish := strings.Count(low, "function(") + strings.Count(low, "window.") +
+		strings.Count(low, "gtag(") + strings.Count(low, "<script")
+	return scriptish >= 6 && letters < 900
+}
+
+func skipHarvestHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return true
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
+	switch {
+	case strings.Contains(host, "tiktok."), strings.Contains(host, "instagram."),
+		strings.Contains(host, "facebook."), host == "x.com", strings.Contains(host, "twitter."),
+		strings.Contains(host, "pinterest."), host == "t.me":
+		return true
+	}
+	path := strings.ToLower(u.Path)
+	if (host == "vk.com" || host == "vk.ru") && strings.Contains(path, "/music") {
+		return true
+	}
+	return false
+}
+
+func harvestPriority(raw string) int {
+	if skipHarvestHost(raw) {
+		return 99
+	}
+	low := strings.ToLower(raw)
+	for _, k := range []string{"chart", "top-", "top_", "/top", "billboard", "spotify", "playlist", "2026"} {
+		if strings.Contains(low, k) {
+			return 0
+		}
+	}
+	return 1
+}
+
+const (
+	harvestN    = 5
+	harvestEach = 900
+)
+
+func harvestPages(ctx context.Context, chrome *Session, hits []SearchResult) []SearchResult {
+	if len(hits) == 0 {
+		return hits
+	}
+	idx := make([]int, 0, len(hits))
+	for i, h := range hits {
+		if h.URL != "" && !skipHarvestHost(h.URL) {
+			idx = append(idx, i)
+		}
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		return harvestPriority(hits[idx[a]].URL) < harvestPriority(hits[idx[b]].URL)
+	})
+	if len(idx) > harvestN {
+		idx = idx[:harvestN]
+	}
+	if len(idx) == 0 {
+		return hits
+	}
+	hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	type got struct {
+		i   int
+		txt string
+	}
+	ch := make(chan got, len(idx))
+	var wg sync.WaitGroup
+	for _, i := range idx {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			txt, err := ReadURLChrome(hctx, hits[i].URL, nil) // HTTP first, parallel
+			if err != nil || looksLikePageShell(txt) {
+				ch <- got{i, ""}
+				return
+			}
+			ch <- got{i, excerptBody(txt, harvestEach)}
+		}()
+	}
+	go func() { wg.Wait(); close(ch) }()
+	out := append([]SearchResult(nil), hits...)
+	for g := range ch {
+		if g.txt != "" {
+			out[g.i].Excerpt = g.txt
+		}
+	}
+	// JS-оболочки — одна за другой через Chrome, не больше двух, чтобы не зависнуть.
+	chromeLeft := 2
+	if chrome != nil {
+		for _, i := range idx {
+			if chromeLeft == 0 {
+				break
+			}
+			if out[i].Excerpt != "" {
+				continue
+			}
+			txt, err := ReadURLChrome(hctx, hits[i].URL, chrome)
+			if err != nil || looksLikePageShell(txt) {
+				continue
+			}
+			out[i].Excerpt = excerptBody(txt, harvestEach)
+			chromeLeft--
+		}
+	}
+	return out
+}
+
+func excerptBody(s string, n int) string {
+	if i := strings.Index(s, "\n\n"); i > 0 && strings.HasPrefix(s, "source=") {
+		s = s[i+2:]
+	}
+	s = strings.TrimSpace(s)
+	return capStr(s, n)
+}
+
+func formatSearchWithHarvest(ctx context.Context, chrome *Session, hits []SearchResult) string {
+	hits = harvestPages(ctx, chrome, hits)
+	read := 0
+	for _, h := range hits {
+		if h.Excerpt != "" {
+			read++
+		}
+	}
+	head := fmt.Sprintf("ссылок %d, параллельно прочитано %d статей. Ответь выжимкой из excerpt со ссылками. Не ходи на tiktok/instagram — там оболочка без текста.\n\n",
+		len(hits), read)
+	return head + toJSON(hits)
+}
+
+func SearchHasExcerpts(s string) bool {
+	return strings.Count(s, `"excerpt"`) >= 2 || strings.Contains(s, "параллельно прочитано")
 }
 
 func stripHTMLLight(s string) string {

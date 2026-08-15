@@ -15,6 +15,39 @@ import (
 // This file is the page_controller from the spec: it drives the browser — navigation, tabs,
 // clicks, typing, forms, scrolling, uploads, selects, drag-and-drop.
 
+func (s *Session) pageText(pageURL string) (string, error) {
+	js := `(() => { const t = document.body ? document.body.innerText : ""; return (t || "").slice(0, 18000); })()`
+	return s.extractJSON(pageURL, js)
+}
+
+// extractJSON opens url in a throwaway tab, runs js (must return a string), and closes
+// the tab. The user's current page is not stolen — a separate chromedp context is used.
+func (s *Session) extractJSON(pageURL, js string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("нет сессии Chrome")
+	}
+	s.actMu.Lock()
+	defer s.actMu.Unlock()
+	if err := s.ensureAlloc(); err != nil {
+		return "", err
+	}
+	ctx, cancel := chromedp.NewContext(s.allocCtx)
+	defer cancel()
+	rctx, rcancel := context.WithTimeout(ctx, 25*time.Second)
+	defer rcancel()
+	var out string
+	err := chromedp.Run(rctx,
+		chromedp.Navigate(pageURL),
+		chromedp.WaitReady("body", chromedp.ByQuery),
+		chromedp.Sleep(1800*time.Millisecond),
+		chromedp.Evaluate(js, &out),
+	)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
 // OpenURL navigates the current tab to url (or opens it in a new tab when newTab is true).
 // It waits for the body to be ready so subsequent DOM reads see a loaded page.
 func (s *Session) OpenURL(rawURL string, newTab bool) (string, error) {

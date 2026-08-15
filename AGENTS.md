@@ -175,7 +175,7 @@ ETH/USDT; на остальных расчёт идёт с пометкой.
 - В контекст модели уходит только `Status` + `Text` инструмента; файлы — человеку.
 
 **Agent Reach** (опционально): `pip install agent-reach` → `agent_reach_doctor` / `run_command` с upstream CLI (twitter, gh, mcporter, bili…).
-Встроенные без Python: `web_search`, `read_url` (Jina), `semantic_search` (Exa→DDG), `youtube_transcript`.
+Встроенные без Python: `web_search` (Яндекс+Google через Chrome, плюс Bing/DDG), `read_url` (Jina), `semantic_search` (Exa→web_search), `youtube_transcript`.
 
 ## Сборка и линтер (обязательно)
 

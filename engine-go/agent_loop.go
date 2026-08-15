@@ -527,6 +527,9 @@ func (ls *loopState) appendToolMsg(tc toolCall, res ToolResult) {
 	switch name {
 	case "web_search", "semantic_search", "github_search":
 		ls.didSrch = true
+		if browser.SearchHasExcerpts(res.Text) {
+			ls.didRead = true
+		}
 	case "read_url", "http_get", "open_url", "get_text":
 		ls.didRead = true
 	}
