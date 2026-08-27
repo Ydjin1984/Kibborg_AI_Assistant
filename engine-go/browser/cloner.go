@@ -3,7 +3,6 @@ package browser
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -34,7 +33,13 @@ type CloneResult struct {
 	Errors int            `json:"errors"`
 }
 
-var cloneHTTP = &http.Client{Timeout: 30 * time.Second}
+// cloneHTTP serves local search engines (httptest / loopback) AND asset fetches that already
+// passed safeRemoteURL. Redirects to internal hosts are blocked; dial pin is not applied
+// here so 127.0.0.1 search backends keep working.
+var cloneHTTP = redirectSafeClient(30 * time.Second)
+
+// publicHTTP is for untrusted remote downloads (SSRF dial pin + redirect guard).
+var publicHTTP = safeHTTPClient(30 * time.Second)
 
 type cloner struct {
 	base      *url.URL
@@ -293,7 +298,7 @@ func download(absURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := cloneHTTP.Get(safe)
+	resp, err := publicHTTP.Get(safe)
 	if err != nil {
 		return nil, err
 	}

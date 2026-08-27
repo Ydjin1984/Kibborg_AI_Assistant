@@ -114,6 +114,24 @@ func TestResumeApprovalRunsOnlyConfirmedTool(t *testing.T) {
 	}
 }
 
+func TestTakePendingMatchingBindsID(t *testing.T) {
+	rs, _ := pauseOnDelete(t)
+	id := rs.pending.ID
+	if takePendingMatching(rs.task.ChatID, "wrong-id-"+id) != nil {
+		t.Fatal("чужой id не должен снимать pending")
+	}
+	if peekPending(rs.task.ChatID) == nil {
+		t.Fatal("pending должен остаться после mismatch")
+	}
+	got := takePendingMatching(rs.task.ChatID, id)
+	if got == nil || got.pending.ID != id {
+		t.Fatal("верный id должен снять именно этот pending")
+	}
+	if peekPending(rs.task.ChatID) != nil {
+		t.Fatal("после match pending пуст")
+	}
+}
+
 // The compacted steps are small enough to sit in RAM across a pause (§6.3 п. 4).
 func TestPendingKeepsCompactStepsNotRawTranscript(t *testing.T) {
 	rs, _ := pauseOnDelete(t)

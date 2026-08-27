@@ -54,8 +54,9 @@ func handleAPIModels(w http.ResponseWriter, r *http.Request) {
 		"query":      q,
 		"fit":        fit,
 		"download":   downloadSnapshot(),
-		"assigned":   filepathBase(webCfg.ModelPath),
-		"running":    liveBrainModel,
+		"assigned":   filepathBase(curWebCfg().ModelPath),
+		"running":    liveBrainModelNow(),
+		"switch":     switchSnapshot(),
 	})
 }
 
@@ -109,8 +110,9 @@ func handleAPIModelAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Path   string `json:"path"`
-		MMProj string `json:"mmproj"`
+		Path    string `json:"path"`
+		MMProj  string `json:"mmproj"`
+		Restart *bool  `json:"restart"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Path) == "" {
 		http.Error(w, "нужно поле path", http.StatusBadRequest)
@@ -120,13 +122,25 @@ func handleAPIModelAssign(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"error": err.Error()})
 		return
 	}
+	restart := true
+	if req.Restart != nil {
+		restart = *req.Restart
+	}
+	text := "Прописал в settings.ini."
+	if restart {
+		if err := startBrainSwitch(); err != nil {
+			text += " " + err.Error()
+		} else {
+			text = "Прописал и перезапускаю мозг: " + filepathBase(curWebCfg().ModelPath)
+		}
+	}
 	writeJSON(w, map[string]any{
 		"ok":      true,
-		"model":   filepathBase(webCfg.ModelPath),
-		"mmproj":  filepathBase(webCfg.MmprojPath),
-		"running": liveBrainModel,
-		"restart": liveBrainModel != "" && liveBrainModel != filepathBase(webCfg.ModelPath),
-		"text":    "Прописал в settings.ini. Мозг в VRAM не трогал — Stop → Start, когда будешь готов.",
+		"model":   filepathBase(curWebCfg().ModelPath),
+		"mmproj":  filepathBase(curWebCfg().MmprojPath),
+		"running": liveBrainModelNow(),
+		"switch":  switchSnapshot(),
+		"text":    text,
 	})
 }
 

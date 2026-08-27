@@ -12,6 +12,69 @@ import (
 	"unicode/utf8"
 )
 
+// StatusUpdate — один кадр ленты шагов. Text идёт в Telegram и как fallback в Web;
+// Phase/Tool/Args дают Web (и будущим клиентам) Codex-подобную карточку.
+// Preview/Body — содержимое ответа инструмента (3 строки + полный текст по клику).
+type StatusUpdate struct {
+	Text    string // человеческая строка (заголовок шага)
+	Phase   string // brain | tool | result | info
+	Tool    string // имя инструмента, если phase=tool|result
+	Args    string // короткий ярлык аргументов (URL/path/cmd)
+	Preview string // первые ~3 строки ответа (Web)
+	Body    string // полный ответ для «развернуть» (Web, усечён)
+}
+
+// StatusFn — колбэк прогресса для обоих каналов.
+type StatusFn func(StatusUpdate)
+
+const (
+	toolResultPreviewLines = 3
+	toolResultBodyChars    = 12000 // в UI; модели и так уходит capAgentText
+)
+
+func statusInfo(text string) StatusUpdate {
+	return StatusUpdate{Text: text, Phase: "info"}
+}
+
+func statusBrain(text string) StatusUpdate {
+	return StatusUpdate{Text: text, Phase: "brain"}
+}
+
+func statusTool(name, args, text string) StatusUpdate {
+	return StatusUpdate{Text: text, Phase: "tool", Tool: name, Args: args}
+}
+
+func statusResult(name, args, text string) StatusUpdate {
+	return StatusUpdate{Text: text, Phase: "result", Tool: name, Args: args}
+}
+
+func statusResultBody(name, args, summary, body string) StatusUpdate {
+	u := statusResult(name, args, summary)
+	u.Preview = firstNLines(body, toolResultPreviewLines)
+	u.Body = capAgentText(body, toolResultBodyChars)
+	return u
+}
+
+// firstNLines returns up to n non-empty lines of s (keeps indentation of kept lines).
+func firstNLines(s string, n int) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.TrimSpace(s)
+	if s == "" || n <= 0 {
+		return ""
+	}
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.TrimSpace(ln) == "" && len(out) == 0 {
+			continue
+		}
+		out = append(out, ln)
+		if len(out) >= n {
+			break
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 func (ls *loopState) rememberAct(s string) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -24,14 +87,37 @@ func (ls *loopState) rememberAct(s string) {
 }
 
 func (ls *loopState) thinkLine() string {
+	// Без слова «мозг» в тексте: в Web уже badge «мозг», иначе получается «мозг мозг · …».
 	if len(ls.seenActs) == 0 {
 		q := oneLine(ls.task.Input)
 		if q != "" {
-			return "🧠 Обдумываю запрос: «" + clipStatus(q, 100) + "»"
+			return "обдумываю запрос: «" + clipStatus(q, 100) + "»"
 		}
-		return "🧠 Обдумываю…"
+		return "обдумываю…"
 	}
-	return "🧠 Обдумываю собранное: " + strings.Join(ls.seenActs, " · ")
+	return "обдумываю собранное: " + strings.Join(ls.seenActs, " · ")
+}
+
+func toolArgsBrief(args map[string]any) string {
+	if args == nil {
+		return ""
+	}
+	if u := shortURL(firstArg(args, "url", "href", "link", "target")); u != "" {
+		return u
+	}
+	if p := shortPath(firstArg(args, "path", "file", "input")); p != "" {
+		return p
+	}
+	if q := firstArg(args, "query", "q", "find"); q != "" {
+		return "«" + clipStatus(q, 60) + "»"
+	}
+	if c := firstArg(args, "command", "cmd"); c != "" {
+		return clipStatus(oneLine(c), 80)
+	}
+	if s := firstArg(args, "symbol", "ticker"); s != "" {
+		return strings.ToUpper(s)
+	}
+	return ""
 }
 
 // toolStatusWord — короткая подпись без аргументов (фолбэк и тесты).
@@ -40,8 +126,29 @@ func toolStatusWord(name string) string {
 }
 
 func toolStatusLine(name string, args map[string]any) string {
+	return tagToolName(name, toolStatusDetail(name, args))
+}
+
+// tagToolName делает имя инструмента видимым в ленте (как у Codex):
+// «⬇️ Скачиваю host» → «⬇️ `download_url` → host».
+func tagToolName(name, detail string) string {
+	name = strings.TrimSpace(name)
+	detail = strings.TrimSpace(detail)
+	if name == "" {
+		return detail
+	}
+	if strings.Contains(detail, "`"+name+"`") {
+		return detail
+	}
+	if detail == "" {
+		return "⚙️ `" + name + "`…"
+	}
+	return detail + " · `" + name + "`"
+}
+
+func toolStatusDetail(name string, args map[string]any) string {
 	q := firstArg(args, "query", "q", "find")
-	u := firstArg(args, "url", "href", "link")
+	u := firstArg(args, "url", "href", "link", "target")
 	p := firstArg(args, "path", "file", "input")
 	host := shortURL(u)
 	file := shortPath(p)
@@ -82,9 +189,9 @@ func toolStatusLine(name string, args map[string]any) string {
 		return "🎬 Беру субтитры…"
 	case "run_command":
 		if cmd != "" {
-			return "🖥 Команда: " + clipStatus(oneLine(cmd), 90)
+			return "💻 Команда: " + clipStatus(oneLine(cmd), 90)
 		}
-		return "🖥 Выполняю команду…"
+		return "💻 Выполняю команду…"
 	case "read_file":
 		if file != "" {
 			return "📂 Читаю файл «" + file + "»"
@@ -118,7 +225,7 @@ func toolStatusLine(name string, args map[string]any) string {
 			return "📄 Читаю документ «" + file + "»"
 		}
 		return "📄 Читаю документ…"
-	case "download_video", "download_file":
+	case "download_video", "download_file", "download_url":
 		if host != "" {
 			return "⬇️ Скачиваю " + host
 		}
@@ -170,6 +277,24 @@ func toolStatusLine(name string, args map[string]any) string {
 			return "🛡 Разбираю «" + file + "»"
 		}
 		return "🛡 Разбираю на безопасность…"
+	case "probe_url":
+		if host != "" {
+			return "🛡 проба → " + host
+		}
+		return "🛡 HTTP-проба цели…"
+	case "write_security_report":
+		if host != "" {
+			return "📝 Пишу MD-отчёт по " + host
+		}
+		if t := firstArg(args, "title"); t != "" {
+			return "📝 Пишу MD-отчёт: «" + clipStatus(t, 60) + "»"
+		}
+		return "📝 Пишу MD-отчёт…"
+	case "search_hacker_tools":
+		if q != "" {
+			return "📚 Каталог Hacker Tools: «" + clipStatus(q, 70) + "»"
+		}
+		return "📚 Смотрю каталог Hacker Tools…"
 	case "click_element":
 		if text != "" {
 			return "🖱 Нажимаю «" + clipStatus(text, 50) + "»"
@@ -214,6 +339,19 @@ func toolStatusLine(name string, args map[string]any) string {
 	case "agent_reach":
 		return "⚙️ Запускаю Agent Reach…"
 	default:
+		// Codex-like: always show what is being called, with the key argument.
+		if host != "" {
+			return "⚙️ " + name + " → " + host
+		}
+		if file != "" {
+			return "⚙️ " + name + " → «" + file + "»"
+		}
+		if q != "" {
+			return "⚙️ " + name + ": «" + clipStatus(q, 70) + "»"
+		}
+		if cmd != "" {
+			return "⚙️ " + name + ": " + clipStatus(oneLine(cmd), 80)
+		}
 		return "⚙️ " + name + "…"
 	}
 }
@@ -251,16 +389,16 @@ func toolResultLine(name string, args map[string]any, res ToolResult) string {
 		if why == "" {
 			why = string(res.Status)
 		}
-		return "✗ Не вышло: " + clipStatus(why, 110)
+		return "❌ Не вышло: " + clipStatus(why, 110)
 	}
 	body := res.Text
 	switch name {
 	case "web_search", "semantic_search", "github_search":
 		n, titles := searchHitHint(body)
 		if n == 0 {
-			return "✗ Поиск ничего не дал"
+			return "❌ Поиск ничего не дал"
 		}
-		line := "✓ Нашёл " + ruCount(n, "ссылку", "ссылки", "ссылок")
+		line := "✔️ Нашёл " + ruCount(n, "ссылку", "ссылки", "ссылок")
 		if titles != "" {
 			line += ": " + titles
 		}
@@ -269,7 +407,7 @@ func toolResultLine(name string, args map[string]any, res ToolResult) string {
 		host := shortURL(firstArg(args, "url", "href", "link"))
 		title := pageTitleHint(body)
 		n := utf8.RuneCountInString(body)
-		line := "✓ Прочитал"
+		line := "✔️ Прочитал"
 		if host != "" {
 			line += " " + host
 		}
@@ -283,7 +421,7 @@ func toolResultLine(name string, args map[string]any, res ToolResult) string {
 	case "read_file", "read_document":
 		file := shortPath(firstArg(args, "path", "file"))
 		n := utf8.RuneCountInString(body)
-		line := "✓ Прочитал"
+		line := "✔️ Прочитал"
 		if file != "" {
 			line += " «" + file + "»"
 		}
@@ -293,19 +431,183 @@ func toolResultLine(name string, args map[string]any, res ToolResult) string {
 		return clipStatus(line, 140)
 	case "analyze_ticker":
 		if s := firstArg(args, "symbol", "ticker"); s != "" {
-			return "✓ Посчитал " + strings.ToUpper(s)
+			return "✔️ Посчитал " + strings.ToUpper(s)
 		}
-		return "✓ Посчитал тикер"
+		return "✔️ Посчитал тикер"
 	case "youtube_transcript":
-		return "✓ Субтитры получены · " + ruCount(utf8.RuneCountInString(body), "знак", "знака", "знаков")
+		return "✔️ Субтитры получены · " + ruCount(utf8.RuneCountInString(body), "знак", "знака", "знаков")
 	case "run_command":
 		if strings.TrimSpace(body) == "" {
-			return "✓ Команда выполнена"
+			return "✔️ Команда выполнена"
 		}
-		return "✓ Команда выполнена · " + ruCount(utf8.RuneCountInString(body), "знак", "знака", "знаков")
+		if snip := oneLine(firstNLines(body, 1)); snip != "" {
+			return clipStatus("✔️ "+snip, 160)
+		}
+		return "✔️ Команда выполнена · " + ruCount(utf8.RuneCountInString(body), "знак", "знака", "знаков")
+	case "extract_links":
+		if n, sample := linkListHint(body); n > 0 {
+			line := "✔️ " + ruCount(n, "ссылка", "ссылки", "ссылок")
+			if sample != "" {
+				line += ": " + sample
+			}
+			return clipStatus(line, 180)
+		}
+		return "✔️ Ссылки получены"
+	case "get_network_requests":
+		if n, sample := networkListHint(body); n > 0 {
+			line := "✔️ " + ruCount(n, "запрос", "запроса", "запросов")
+			if sample != "" {
+				line += ": " + sample
+			}
+			return clipStatus(line, 180)
+		}
+		if strings.TrimSpace(body) != "" {
+			return clipStatus("✔️ "+oneLine(firstNLines(body, 1)), 160)
+		}
+		return "✔️ Сеть: пусто"
+	case "probe_url":
+		host := shortURL(firstArg(args, "url", "href", "link"))
+		line := "✔️ Проба"
+		if host != "" {
+			line += " " + host
+		}
+		if st := probeStatusHint(body); st != "" {
+			line += " · HTTP " + st
+		}
+		if n := strings.Count(body, "**Находки:**"); n > 0 {
+			// Count numbered findings: "1. [", "2. ["…
+			findings := 0
+			for _, ln := range strings.Split(body, "\n") {
+				trim := strings.TrimSpace(ln)
+				if len(trim) > 3 && trim[0] >= '1' && trim[0] <= '9' && strings.Contains(trim, ". [") {
+					findings++
+				}
+			}
+			if findings > 0 {
+				line += " · " + ruCount(findings, "находка", "находки", "находок")
+			}
+		}
+		return clipStatus(line, 160)
+	case "write_security_report":
+		if p := shortPath(firstArg(args, "path", "file")); p != "" {
+			return "✔️ Отчёт записан «" + p + "»"
+		}
+		if strings.Contains(body, "/api/files/") || strings.Contains(body, "runtime/browser/security") {
+			return "✔️ MD-отчёт сохранён"
+		}
+		return "✔️ MD-отчёт записан"
+	case "download_url":
+		host := shortURL(firstArg(args, "url", "href", "link"))
+		line := "✔️ Скачал"
+		if host != "" {
+			line += " " + host
+		}
+		if strings.Contains(body, "/api/files/") {
+			line += " · есть /api/files"
+		}
+		return clipStatus(line, 140)
+	case "search_hacker_tools":
+		if snip := oneLine(firstNLines(body, 1)); snip != "" {
+			return clipStatus("✔️ "+snip, 160)
+		}
+		return "✔️ Каталог · " + ruCount(utf8.RuneCountInString(body), "знак", "знака", "знаков")
 	default:
-		return ""
+		// Codex-like: show what came back, not only char count.
+		if strings.TrimSpace(body) == "" {
+			return "✔️ " + name
+		}
+		if snip := oneLine(firstNLines(body, 1)); snip != "" {
+			return clipStatus("✔️ "+snip, 160)
+		}
+		return clipStatus("✔️ "+name+" · "+ruCount(utf8.RuneCountInString(body), "знак", "знака", "знаков"), 120)
 	}
+}
+
+func linkListHint(body string) (int, string) {
+	var links []struct {
+		Href string `json:"href"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(jsonArrayPrefix(body)), &links); err != nil || len(links) == 0 {
+		n := strings.Count(body, `"href"`)
+		if n == 0 {
+			n = strings.Count(body, "http://") + strings.Count(body, "https://")
+		}
+		return n, ""
+	}
+	var samples []string
+	for _, L := range links {
+		u := strings.TrimSpace(L.Href)
+		if u == "" {
+			continue
+		}
+		samples = append(samples, clipStatus(shortURL(u), 40))
+		if len(samples) == 3 {
+			break
+		}
+	}
+	return len(links), strings.Join(samples, "; ")
+}
+
+func networkListHint(body string) (int, string) {
+	var reqs []struct {
+		Method string `json:"method"`
+		URL    string `json:"url"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(jsonArrayPrefix(body)), &reqs); err != nil || len(reqs) == 0 {
+		n := strings.Count(body, `"url"`)
+		return n, ""
+	}
+	var samples []string
+	for _, r := range reqs {
+		bit := strings.TrimSpace(r.Method)
+		if u := shortURL(r.URL); u != "" {
+			if bit != "" {
+				bit += " "
+			}
+			bit += u
+		}
+		if r.Status > 0 {
+			bit += " " + itoa(r.Status)
+		}
+		if bit == "" {
+			continue
+		}
+		samples = append(samples, clipStatus(bit, 50))
+		if len(samples) == 3 {
+			break
+		}
+	}
+	return len(reqs), strings.Join(samples, "; ")
+}
+
+// jsonArrayPrefix trims a trailing "…(показаны первые N из M)" note from capList output.
+func jsonArrayPrefix(body string) string {
+	body = strings.TrimSpace(body)
+	if i := strings.Index(body, "\n…("); i > 0 {
+		return body[:i]
+	}
+	return body
+}
+
+func probeStatusHint(body string) string {
+	const marker = "статус:"
+	for _, line := range strings.Split(body, "\n") {
+		trim := strings.TrimSpace(line)
+		low := strings.ToLower(trim)
+		idx := strings.Index(low, marker)
+		if idx < 0 {
+			continue
+		}
+		// "- статус: 200 · HTTPS: true · TLS: …"
+		rest := strings.TrimSpace(trim[idx+len(marker):])
+		fields := strings.Fields(rest)
+		if len(fields) > 0 {
+			return strings.Trim(fields[0], "·,;")
+		}
+	}
+	return ""
 }
 
 func searchHitHint(body string) (int, string) {

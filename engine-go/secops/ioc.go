@@ -151,7 +151,8 @@ func ScanText(text string) ScanReport {
 			continue
 		}
 		rep.Threats = append(rep.Threats, ThreatMatch{
-			Category: p.category, Severity: p.severity, Count: len(matches), Sample: capSample(matches[0], 120),
+			Category: p.category, Severity: p.severity, Count: len(matches),
+			Sample: redactThreatSample(p.category, capSample(matches[0], 120)),
 		})
 	}
 	sort.Slice(rep.Threats, func(i, j int) bool {
@@ -222,6 +223,34 @@ func capSample(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
+}
+
+// redactThreatSample strips secret material from report samples so Telegram/Web/MD
+// do not re-publish API keys, bot tokens, or private key bodies.
+func redactThreatSample(category, sample string) string {
+	if category != "secret_leak" {
+		return sample
+	}
+	low := strings.ToLower(sample)
+	switch {
+	case strings.Contains(low, "begin") && strings.Contains(low, "private key"):
+		return "[private-key redacted]"
+	case strings.Contains(sample, "AKIA"):
+		return "AKIA…[aws-key redacted]"
+	case strings.Contains(sample, "bot") && strings.Contains(sample, ":"):
+		return "[bot-token redacted]"
+	}
+	// password=… / api_key=… / token: … — keep the key name, drop the value.
+	for _, sep := range []string{"=", ":"} {
+		if i := strings.Index(sample, sep); i > 0 {
+			key := strings.TrimSpace(sample[:i])
+			if len(key) > 40 {
+				key = key[:40]
+			}
+			return key + sep + "[redacted]"
+		}
+	}
+	return "[secret redacted]"
 }
 
 func sevRank(s string) int {

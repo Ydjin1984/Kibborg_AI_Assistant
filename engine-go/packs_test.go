@@ -43,7 +43,7 @@ func TestPackSchemaBudget(t *testing.T) {
 	if worstN > packSchemaBudgetChars {
 		t.Fatalf("худшая тройка паков %v = %d символов > лимита %d (после ×3 это %d из %d бюджета). "+
 			"Режь описания схем, не порог.", worstCombo, worstN, packSchemaBudgetChars,
-			worstN*3, agentSoftBudgetChars)
+			worstN*3, agentSoftBudgetFloor)
 	}
 	t.Logf("худшая тройка %v: %d символов (%.0f%% лимита), после ×3 = %d",
 		worstCombo, worstN, float64(worstN)/float64(packSchemaBudgetChars)*100, worstN*3)
@@ -93,8 +93,9 @@ func TestPackContents(t *testing.T) {
 		packFiles:       {"read_file", "write_file", "list_dir", "file_info", "mkdir", "delete_path", "read_document"},
 		packMedia: {"download_video", "youtube_transcript", "analyze_video", "transcribe_media",
 			"video_frames", "media_info", "convert_media", "speak_text"},
-		packTrade:  {"analyze_ticker", "size_position", "journal_add", "journal_stats"},
-		packSecops: {"analyze_log", "scan_text", "audit_file"},
+		packTrade: {"analyze_ticker", "size_position", "journal_add", "journal_stats"},
+		packSecops: {"analyze_log", "scan_text", "audit_file",
+			"search_hacker_tools", "probe_url", "download_url", "write_security_report"},
 		packSystem: {"capture_screen", "list_windows", "focus_window", "type_keyboard",
 			"press_keys", "mouse_action", "list_processes", "kill_process", "launch_app", "clipboard"},
 	}

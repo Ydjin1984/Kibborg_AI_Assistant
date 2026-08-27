@@ -90,7 +90,7 @@ func normalizeTTSMode(s string) string {
 
 func ttsModeLabel(mode string) string {
 	if mode == ttsModeAuto {
-		return "🔊 **Озвучка всегда**: каждый ответ уходит голосом (SuperTonic, CPU). " +
+		return "🔊 **Озвучка всегда**: каждый ответ уходит голосом (Qwen3-TTS, GPU). " +
 			"Код, таблицы и статусы агента не читаю. По запросу: `/tts ask`."
 	}
 	return "🔇 **Озвучка по запросу**: кнопка «Озвучить» в панели или `/speak` в Telegram. " +

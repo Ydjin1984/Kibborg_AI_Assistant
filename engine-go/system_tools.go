@@ -498,7 +498,15 @@ func toolKillProcess(t *Task, args map[string]any) ToolResult {
 	if pid <= 0 && name == "" {
 		return failResult("нужен pid или name", nil)
 	}
+	// Defense in depth: never kill by PID under a mismatched/spoofed name.
 	if pid > 0 {
+		if resolved := lookupProcessName(pid); resolved != "" {
+			want := strings.ToLower(strings.TrimSuffix(name, ".exe"))
+			got := strings.ToLower(strings.TrimSuffix(resolved, ".exe"))
+			if want != "" && want != got {
+				return failResult(fmt.Sprintf("имя «%s» не совпадает с pid %d (%s)", name, pid, resolved), nil)
+			}
+		}
 		proc, err := os.FindProcess(pid)
 		if err != nil {
 			return failResult(fmt.Sprintf("процесс %d не найден: %v", pid, err), err)

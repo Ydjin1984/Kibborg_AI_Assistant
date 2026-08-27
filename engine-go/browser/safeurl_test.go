@@ -1,8 +1,10 @@
 package browser
 
 import (
+	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSafeRemoteURL_BlocksSSRFAndLFI(t *testing.T) {
@@ -18,6 +20,8 @@ func TestSafeRemoteURL_BlocksSSRFAndLFI(t *testing.T) {
 		"http://192.168.1.1/",
 		"http://metadata.internal/",
 		"ftp://example.com/file",
+		"http://2130706433/", // decimal loopback
+		"http://0x7f000001/", // hex loopback
 	}
 	for _, u := range blocked {
 		if _, err := safeRemoteURL(u); err == nil {
@@ -26,11 +30,24 @@ func TestSafeRemoteURL_BlocksSSRFAndLFI(t *testing.T) {
 	}
 }
 
+func TestSafeHTTPClient_BlocksRedirectToInternal(t *testing.T) {
+	client := safeHTTPClient(5 * time.Second)
+	if client.CheckRedirect == nil {
+		t.Fatal("CheckRedirect must be set")
+	}
+	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1/secret", nil)
+	via := []*http.Request{req}
+	if err := client.CheckRedirect(req, via); err == nil {
+		t.Fatal("редирект на 127.0.0.1 должен блокироваться")
+	}
+}
+
 func TestSafeRemoteURL_AllowsPublic(t *testing.T) {
+	// Prefer reserved/example hosts — avoid flaky third-party DNS in CI.
 	allowed := []string{
 		"https://example.com/page",
-		"http://binance.com/api/v3/klines",
-		"https://youtube.com/watch?v=abc",
+		"http://example.org/api",
+		"https://example.net/watch?v=abc",
 	}
 	for _, u := range allowed {
 		if _, err := safeRemoteURL(u); err != nil {

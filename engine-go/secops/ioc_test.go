@@ -1,6 +1,9 @@
 package secops
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func findIOC(r ScanReport, value string) (IOC, bool) {
 	for _, i := range r.IOCs {
@@ -51,6 +54,19 @@ func TestScanText_DetectsThreats(t *testing.T) {
 		r := ScanText(payload)
 		if !hasThreat(r, cat) {
 			t.Errorf("ожидалась категория угрозы %q для payload %q; threats=%+v", cat, payload, r.Threats)
+		}
+		if cat == "secret_leak" {
+			for _, th := range r.Threats {
+				if th.Category != "secret_leak" {
+					continue
+				}
+				if strings.Contains(th.Sample, "SsdkjhKJH23kjh23kjh") {
+					t.Errorf("sample secret_leak не должен содержать сырой секрет: %q", th.Sample)
+				}
+				if !strings.Contains(th.Sample, "redacted") && !strings.Contains(th.Sample, "[") {
+					t.Errorf("sample secret_leak должен быть редактирован, got %q", th.Sample)
+				}
+			}
 		}
 	}
 }

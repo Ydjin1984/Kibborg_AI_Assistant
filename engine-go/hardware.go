@@ -215,7 +215,7 @@ func giBToBytes(g float64) int64 {
 // formatHardwareText — отчёт для Telegram и для /hw в чате панели.
 func formatHardwareText(rep HardwareReport) string {
 	var b strings.Builder
-	b.WriteString("🖥 **Тест железа**\n\n")
+	b.WriteString("💻 **Тест железа**\n\n")
 	s := rep.Summary
 	fmt.Fprintf(&b, "🧠 CPU: **%d** сокет · **%d** ядер · **%d** потоков\n", s.Sockets, s.Cores, s.Threads)
 	for i, c := range rep.CPU {

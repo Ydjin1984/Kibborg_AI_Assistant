@@ -1,8 +1,8 @@
 package main
 
-// Озвучка ответов через локальный SuperTonic 3 (ONNX, CPU, без GPU).
-// Движок поднимает `supertonic serve` на loopback, как llama-server для мозга:
-// модель грузится один раз, дальше POST /v1/tts отдаёт WAV.
+// Озвучка ответов через локальный Qwen3-TTS 0.6B CustomVoice (GPU).
+// Движок поднимает tts_server/server.py на loopback: модель грузится один раз,
+// дальше POST /v1/tts отдаёт WAV. По умолчанию женский Serena, lang=Auto для RU/EN.
 
 import (
 	"bytes"
@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,43 +47,14 @@ var (
 )
 
 func respreadTTSAfterFirstSynth(cfg Config) {
-	ttsSpreadOnce.Do(func() {
-		n := pulseTTSAffinityOnce(cfg)
-		log.Printf("[TTS] после первого синтеза размазал %d нитей SuperTonic на оба CPU", n)
-	})
+	// Раньше размазывали нити SuperTonic по CPU. Qwen3-TTS сидит на GPU — no-op.
+	_ = cfg
+	ttsSpreadOnce.Do(func() {})
 }
 
-func pulseTTSAffinityOnce(cfg Config) int {
-	port := cfg.TTSPort
-	if port <= 0 {
-		port = defaultTTSPort
-	}
-	pid := pidListeningOnPort(port)
-	if pid <= 0 {
-		return 0
-	}
-	setProcessAllCpuSets(pid)
-	return spreadPIDTree(pid)
-}
-
-// pulseTTSAffinity крутит размазку, пока идёт POST /v1/tts: пул ONNX рождается
-// уже во время запроса и иначе остаётся на одном Xeon.
 func pulseTTSAffinity(cfg Config) func() {
-	pulseTTSAffinityOnce(cfg)
-	done := make(chan struct{})
-	go func() {
-		t := time.NewTicker(120 * time.Millisecond)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				pulseTTSAffinityOnce(cfg)
-			}
-		}
-	}()
-	return func() { close(done) }
+	_ = cfg
+	return func() {}
 }
 
 func rememberSpeakable(chatID int64, text string) {
@@ -129,8 +99,7 @@ func ttsReady(cfg Config) bool {
 	if port <= 0 {
 		port = defaultTTSPort
 	}
-	// Только порт: панель дёргает статус раз в 1.5 с, а SuperTonic пишет
-	// каждый GET /v1/health в лог — отсюда простыня «200 OK».
+	// Только порт: панель дёргает статус раз в 1.5 с — HTTP health не дёргаем.
 	return portInUse(port)
 }
 
@@ -144,7 +113,10 @@ func ttsStatus(cfg Config) string {
 	return "down"
 }
 
-// ensureTTS поднимает `supertonic serve`, если порт свободен.
+const defaultTTSModel = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+const defaultTTSVoice = "Serena"
+
+// ensureTTS поднимает tts_server/server.py (Qwen3-TTS), если порт свободен.
 func ensureTTS(cfg Config) {
 	if !ttsWanted(cfg) {
 		log.Printf("[TTS] выключена (TTS_URL=off)")
@@ -156,97 +128,100 @@ func ensureTTS(cfg Config) {
 	}
 	if portInUse(port) {
 		if pid := pidListeningOnPort(port); pid > 0 {
-			n := spreadPIDTree(pid)
-			log.Printf("[TTS] порт :%d уже слушает (pid %d) — потоки размазаны по CPU (%d нитей)", port, pid, n)
+			log.Printf("[TTS] порт :%d уже слушает (pid %d) — переиспользую Qwen3-TTS", port, pid)
 		} else {
-			log.Printf("[TTS] порт :%d уже слушает — переиспользую SuperTonic", port)
+			log.Printf("[TTS] порт :%d уже слушает — переиспользую TTS", port)
 		}
 		return
 	}
-	exe := ttsExe(cfg)
-	if exe == "" {
-		log.Printf("[TTS] supertonic не найден в PATH — `pip install \"supertonic[serve]\"`")
+	py, script, err := ttsPythonAndScript(cfg)
+	if err != nil {
+		log.Printf("[TTS] %v", err)
 		return
 	}
-	intra, inter := ttsThreadPlan(cfg)
-	args := []string{"serve", "--host", "127.0.0.1", "--port", strconv.Itoa(port), "--model", "supertonic-3"}
-	cmd := exec.Command(exe, args...)
+	model := strings.TrimSpace(cfg.TTSModel)
+	if model == "" {
+		model = defaultTTSModel
+	}
+	voice := strings.TrimSpace(cfg.TTSVoice)
+	if voice == "" {
+		voice = defaultTTSVoice
+	}
+	args := []string{script, "--host", "127.0.0.1", "--port", strconv.Itoa(port), "--model", model, "--voice", voice}
+	cmd := exec.Command(py, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = ttsProcEnv(intra, inter)
+	cmd.Dir = filepath.Dir(script)
+	cmd.Env = ttsProcEnv(cfg)
 	if err := cmd.Start(); err != nil {
-		log.Printf("[TTS] не запустил SuperTonic: %v", err)
+		log.Printf("[TTS] не запустил Qwen3-TTS: %v", err)
 		return
 	}
 	registerEngineProc(cmd.Process)
-	go func(pid int) {
-		time.Sleep(2 * time.Second)
-		n := spreadPIDAcrossCPUGroups(pid)
-		log.Printf("[TTS] SuperTonic pid %d :%d — F1, %d intra / %d inter потоков, размазано %d нитей на оба CPU",
-			pid, port, intra, inter, n)
-	}(cmd.Process.Pid)
-	log.Printf("[TTS] SuperTonic pid %d :%d — первая загрузка весов ~400 МБ, CPU (intra=%d)", cmd.Process.Pid, port, intra)
+	gpuNote := "CUDA default"
+	if cfg.TTSGPU >= 0 {
+		gpuNote = fmt.Sprintf("CUDA_VISIBLE_DEVICES=%d", cfg.TTSGPU)
+	}
+	log.Printf("[TTS] Qwen3-TTS pid %d :%d — %s voice=%s (%s), первая загрузка ~2 ГБ",
+		cmd.Process.Pid, port, model, voice, gpuNote)
 }
 
-// ttsThreadPlan — сколько потоков отдать ONNX. По умолчанию все физические ядра
-// обоих сокетов: иначе Windows/ONNX сажают процесс на одну группу и второй Xeon спит.
-func ttsThreadPlan(cfg Config) (intra, inter int) {
-	if cfg.TTSThreads > 0 {
-		intra = cfg.TTSThreads
-	} else {
-		hw := probeHardware(false)
-		// Логические процессоры обоих сокетов: иначе 44 нити садятся в одну
-		// группу Windows и второй Xeon простаивает.
-		intra = hw.Summary.Threads
-		if intra <= 0 {
-			intra = hw.Summary.Cores
-		}
-		if intra <= 0 {
-			intra = runtime.NumCPU()
-		}
+func ttsProcEnv(cfg Config) []string {
+	env := os.Environ()
+	// По умолчанию сажаем озвучку на 3060 (index 1): 3090 занята мозгом.
+	if cfg.TTSGPU >= 0 {
+		env = append(env, "CUDA_VISIBLE_DEVICES="+strconv.Itoa(cfg.TTSGPU))
 	}
-	if intra < 2 {
-		intra = 2
-	}
-	inter = hwSockets()
-	if inter < 2 {
-		inter = 2
-	}
-	return intra, inter
-}
-
-func ttsProcEnv(intra, inter int) []string {
-	return append(os.Environ(),
-		"SUPERTONIC_INTRA_OP_THREADS="+strconv.Itoa(intra),
-		"SUPERTONIC_INTER_OP_THREADS="+strconv.Itoa(inter),
-		"OMP_NUM_THREADS="+strconv.Itoa(intra),
-		// Не ставить OMP_PROC_BIND/OMP_PLACES: на Windows с двумя группами
-		// OpenMP видит только «свой» Xeon и второй сокет остаётся пустым.
-		"OMP_PROC_BIND=false",
-		"KMP_AFFINITY=disabled",
-		"OMP_WAIT_POLICY=ACTIVE",
+	env = append(env,
+		"PYTHONUTF8=1",
+		"PYTHONIOENCODING=utf-8",
+		"HF_HUB_DISABLE_SYMLINKS_WARNING=1",
 	)
+	return env
 }
 
-func hwSockets() int {
-	hw := probeHardware(false)
-	if hw.Summary.Sockets > 0 {
-		return hw.Summary.Sockets
-	}
-	return 2
-}
-
-func ttsExe(cfg Config) string {
+// ttsPythonAndScript ищет venv рядом с server.py либо явный TTS_SERVER.
+func ttsPythonAndScript(cfg Config) (python, script string, err error) {
 	if p := strings.TrimSpace(cfg.TTSExe); p != "" {
-		return p
+		lower := strings.ToLower(p)
+		if strings.HasSuffix(lower, ".py") {
+			script = p
+			python = filepath.Join(filepath.Dir(p), ".venv", "Scripts", "python.exe")
+			if _, e := os.Stat(python); e != nil {
+				if w, lookErr := exec.LookPath("python"); lookErr == nil {
+					python = w
+				} else {
+					return "", "", fmt.Errorf("TTS_SERVER=%s, но нет .venv рядом и python в PATH", p)
+				}
+			}
+			return python, script, nil
+		}
+		// Путь к python.exe — рядом ищем server.py
+		python = p
+		cand := filepath.Join(filepath.Dir(p), "server.py")
+		if _, e := os.Stat(cand); e == nil {
+			return python, cand, nil
+		}
+		cand = filepath.Join("tts_server", "server.py")
+		if abs, e := filepath.Abs(cand); e == nil {
+			if _, e2 := os.Stat(abs); e2 == nil {
+				return python, abs, nil
+			}
+		}
+		return "", "", fmt.Errorf("TTS_SERVER=%s: не нашёл server.py", p)
 	}
-	if p, err := exec.LookPath("supertonic"); err == nil {
-		return p
+	script = filepath.Join("tts_server", "server.py")
+	if abs, e := filepath.Abs(script); e == nil {
+		script = abs
 	}
-	if p, err := exec.LookPath("supertonic.exe"); err == nil {
-		return p
+	if _, e := os.Stat(script); e != nil {
+		return "", "", fmt.Errorf("нет %s — запусти tts_server\\install.cmd", script)
 	}
-	return ""
+	python = filepath.Join(filepath.Dir(script), ".venv", "Scripts", "python.exe")
+	if _, e := os.Stat(python); e != nil {
+		return "", "", fmt.Errorf("нет %s — запусти tts_server\\install.cmd", python)
+	}
+	return python, script, nil
 }
 
 // SpeechFile — готовый файл озвучки для панели или Telegram.
@@ -294,7 +269,7 @@ func ttsWaitLog(start time.Time, limit time.Duration, chars int) func() {
 			case <-done:
 				return
 			case <-t.C:
-				log.Printf("[TTS] SuperTonic ещё считает… %s / лимит %s (%d символов, оба CPU)",
+				log.Printf("[TTS] Qwen3-TTS ещё считает… %s / лимит %s (%d символов, GPU)",
 					time.Since(start).Truncate(time.Second), limit.Truncate(time.Second), chars)
 			}
 		}
@@ -322,28 +297,23 @@ func synthesizeSpeech(cfg Config, raw string) (SpeechFile, error) {
 		return SpeechFile{}, fmt.Errorf("озвучка выключена (TTS_URL=off)")
 	}
 	if !ttsReady(cfg) {
-		log.Printf("[TTS] SuperTonic не слушает порт — синтез не начался")
-		return SpeechFile{}, fmt.Errorf("SuperTonic ещё не готов — подожди несколько секунд или поставь: pip install \"supertonic[serve]\"")
+		log.Printf("[TTS] Qwen3-TTS не слушает порт — синтез не начался")
+		return SpeechFile{}, fmt.Errorf("озвучка ещё не готова — подожди загрузку модели или запусти tts_server\\install.cmd")
 	}
 	lang := speechLang(text)
 	voice := strings.TrimSpace(cfg.TTSVoice)
 	if voice == "" {
-		voice = "F1"
-	}
-	steps := cfg.TTSSteps
-	if steps <= 0 {
-		steps = 8
+		voice = defaultTTSVoice
 	}
 	chars := utf8.RuneCountInString(text)
 	limit := ttsTimeoutFor(chars)
-	log.Printf("[TTS] синтез %d символов (исходник %d) lang=%s voice=%s steps=%d лимит %s — «%s»",
-		chars, rawN, lang, voice, steps, limit.Truncate(time.Second), clipStatus(text, 90))
+	log.Printf("[TTS] синтез %d символов (исходник %d) lang=%s voice=%s лимит %s — «%s»",
+		chars, rawN, lang, voice, limit.Truncate(time.Second), clipStatus(text, 90))
 
 	body, _ := json.Marshal(map[string]any{
 		"text":  text,
 		"voice": voice,
 		"lang":  lang,
-		"steps": steps,
 	})
 	c := &http.Client{Timeout: limit}
 	stopAff := pulseTTSAffinity(cfg)
@@ -354,32 +324,31 @@ func synthesizeSpeech(cfg Config, raw string) (SpeechFile, error) {
 	if err != nil {
 		elapsed := time.Since(started).Truncate(time.Millisecond)
 		if isTTSTimeout(err) {
-			log.Printf("[TTS] ТАЙМАУТ за %s (лимит %s, %d символов). SuperTonic мог не успеть и всё ещё грузит оба CPU. %v",
+			log.Printf("[TTS] ТАЙМАУТ за %s (лимит %s, %d символов). %v",
 				elapsed, limit.Truncate(time.Second), chars, err)
-			return SpeechFile{}, fmt.Errorf("SuperTonic не уложился в %s (%d символов) — смотри консоль [TTS]; процесс ещё может грузить оба CPU",
+			return SpeechFile{}, fmt.Errorf("Qwen3-TTS не уложился в %s (%d символов) — смотри консоль [TTS]",
 				limit.Truncate(time.Second), chars)
 		}
-		log.Printf("[TTS] SuperTonic не ответил за %s: %v", elapsed, err)
-		return SpeechFile{}, fmt.Errorf("SuperTonic не ответил: %w", err)
+		log.Printf("[TTS] Qwen3-TTS не ответил за %s: %v", elapsed, err)
+		return SpeechFile{}, fmt.Errorf("Qwen3-TTS не ответил: %w", err)
 	}
 	defer resp.Body.Close()
 	wav, err := io.ReadAll(io.LimitReader(resp.Body, 80<<20))
 	if err != nil {
-		log.Printf("[TTS] не прочитал ответ SuperTonic за %s: %v", time.Since(started).Truncate(time.Millisecond), err)
+		log.Printf("[TTS] не прочитал ответ TTS за %s: %v", time.Since(started).Truncate(time.Millisecond), err)
 		return SpeechFile{}, err
 	}
 	if resp.StatusCode != 200 {
 		snippet := capAgentText(string(wav), 240)
-		log.Printf("[TTS] SuperTonic HTTP %d за %s (%d байт тела): %s",
+		log.Printf("[TTS] Qwen3-TTS HTTP %d за %s (%d байт тела): %s",
 			resp.StatusCode, time.Since(started).Truncate(time.Millisecond), len(wav), snippet)
-		return SpeechFile{}, fmt.Errorf("SuperTonic HTTP %d: %s", resp.StatusCode, capAgentText(string(wav), 200))
+		return SpeechFile{}, fmt.Errorf("Qwen3-TTS HTTP %d: %s", resp.StatusCode, capAgentText(string(wav), 200))
 	}
-	// Пул ONNX появляется после первого синтеза — тогда и размазываем нити по обоим Xeon.
 	respreadTTSAfterFirstSynth(cfg)
 	if len(wav) < 44 || string(wav[0:4]) != "RIFF" {
-		log.Printf("[TTS] SuperTonic вернул не WAV (%d байт, HTTP %d, %s)",
+		log.Printf("[TTS] TTS вернул не WAV (%d байт, HTTP %d, %s)",
 			len(wav), resp.StatusCode, time.Since(started).Truncate(time.Millisecond))
-		return SpeechFile{}, fmt.Errorf("SuperTonic вернул не WAV (%d байт)", len(wav))
+		return SpeechFile{}, fmt.Errorf("TTS вернул не WAV (%d байт)", len(wav))
 	}
 	if err := os.MkdirAll(ttsArtifactDir, 0o755); err != nil {
 		log.Printf("[TTS] не создать %s: %v", ttsArtifactDir, err)
@@ -496,7 +465,12 @@ func speechText(raw string) string {
 	out = speakSources(out)
 	out = stripUnspeakable(out)
 	out = strings.TrimSpace(out)
-	out = speakDigits(out, speechLang(out))
+	lang := speechLang(out)
+	digitLang := lang
+	if digitLang == "auto" || digitLang == "na" {
+		digitLang = "ru" // пропись чисел — по-русски, если смесь/неясно
+	}
+	out = speakDigits(out, digitLang)
 	if utf8.RuneCountInString(out) > maxSpeakChars {
 		out = trimRunes(out, maxSpeakChars)
 	}
@@ -573,8 +547,7 @@ func prettyHost(raw string) string {
 	return host
 }
 
-// stripUnspeakable выкидывает эмодзи и служебные знаки. SuperTonic падает на
-// variation selector U+FE0F (невидимый хвост у ⚠️/✅): «unsupported character ️».
+// stripUnspeakable выкидывает эмодзи и служебные знаки (в т.ч. U+FE0F у ⚠️/✅).
 func stripUnspeakable(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -631,17 +604,25 @@ func stripMarkupLine(s string) string {
 }
 
 func speechLang(s string) string {
-	var letters, cyr int
+	var letters, cyr, lat int
 	for _, r := range s {
-		if unicode.IsLetter(r) {
-			letters++
-			if r >= 0x0400 && r <= 0x04FF {
-				cyr++
-			}
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		switch {
+		case r >= 0x0400 && r <= 0x04FF:
+			cyr++
+		case (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'):
+			lat++
 		}
 	}
 	if letters == 0 {
-		return "na"
+		return "auto"
+	}
+	// Смесь кириллицы и латиницы — Auto: Qwen сам ведёт оба языка одним голосом.
+	if cyr > 0 && lat > 0 && cyr*100/letters >= 10 && lat*100/letters >= 10 {
+		return "auto"
 	}
 	if cyr*100/letters >= 25 {
 		return "ru"

@@ -1,0 +1,25 @@
+# Heavy / generated — keep graph on source + docs only
+engine-go/runtime/
+engine-go/models/
+engine-go/tts_server/.venv/
+engine-go/hacker-tools/awesome-hacking/
+engine-go/**/*.exe
+engine-go/**/*.exe~
+engine-go/gpu-profiles/logs/
+**/*.log
+**/*.gguf
+**/node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+.vscode/
+design/
+*.pdf
+*.mp4
+*.wav
+*.ogg
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif

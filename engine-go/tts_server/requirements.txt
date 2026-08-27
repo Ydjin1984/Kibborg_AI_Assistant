@@ -1,0 +1,6 @@
+# Qwen3-TTS 0.6B через faster-qwen3-tts (CUDA Graphs) — decode на GPU без CPU-шагов.
+# torch ставится отдельно в install.cmd (CUDA wheel).
+# Не ставить обычный qwen-tts рядом — конфликт с qwen-tts-hf.
+faster-qwen3-tts>=0.1.0
+soundfile>=0.12.1
+numpy>=1.26.0

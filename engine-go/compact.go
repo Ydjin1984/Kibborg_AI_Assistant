@@ -30,14 +30,18 @@ var compactCommands = []string{"/compact", "/сжать", "/сжатие", "/com
 const (
 	// compactKeepTurns — сколько последних реплик остаётся дословно. Свежий хвост диалога
 	// нужен буквально: именно к нему относятся «сохрани это», «прочитай подробнее».
-	compactKeepTurns = 4
+	compactKeepTurns = 8
 	// compactMinMessages — ниже этого сжимать нечего, и честнее так и сказать.
 	compactMinMessages = 6
 	// compactSummaryChars — потолок сводки. Сводка длиннее исходника бессмысленна.
-	compactSummaryChars = 2000
-	// autoCompactAt — на этом размере истории сжатие запускается само, ДО того как окно
-	// начнёт терять старые реплики (maxHistory = 12).
-	autoCompactAt = maxHistory
+	compactSummaryChars = 4000
+	// autoCompactAtPct — автосжатие по РЕАЛЬНОМУ заполнению окна (prompt_n / n_ctx),
+	// а не по числу реплик. При 256K сжимать на 12-й реплике (1–3% окна) — это и было
+	// причиной «контекст сжат при почти пустом метре».
+	autoCompactAtPct = 65
+	// autoCompactNearMax — запас до жёсткой обрезки maxHistory: если реплик много, а
+	// prompt_n ещё мал (короткие ответы), всё равно пересказать до потери хвоста.
+	autoCompactNearMax = 8
 )
 
 // compactionReport is what the user is told after a compaction.
@@ -162,14 +166,11 @@ func summariseDialog(cfg Config, msgs []chatMsg) (string, error) {
 // slow, and a second one would summarise a half-rewritten history).
 var compactingChats sync.Map
 
-// maybeAutoCompact сжимает историю САМ, когда окно вот-вот начнёт терять старые реплики.
-// Работает в фоне: пользователь не должен ждать сжатия ради ответа на свой вопрос.
+// maybeAutoCompact сжимает историю САМ, когда окно реально заполнено (или вот-вот
+// сработает жёсткая обрезка maxHistory). Работает в фоне: пользователь не ждёт сжатия.
 // notify получает готовую сводку — молчаливое изменение памяти пользователь бы не заметил.
 func maybeAutoCompact(cfg Config, chatID int64, notify func(string)) {
-	histMu.Lock()
-	n := len(history[chatID])
-	histMu.Unlock()
-	if n < autoCompactAt {
+	if !shouldAutoCompact(cfg, chatID) {
 		return
 	}
 	if _, busy := compactingChats.LoadOrStore(chatID, true); busy {
@@ -187,6 +188,34 @@ func maybeAutoCompact(cfg Config, chatID int64, notify func(string)) {
 				rep.Before, rep.After, rep.BeforeTokens, rep.AfterTokens))
 		}
 	}()
+}
+
+// shouldAutoCompact — порог по заполнению окна (и страховка у maxHistory).
+func shouldAutoCompact(cfg Config, chatID int64) bool {
+	histMu.Lock()
+	n := len(history[chatID])
+	histTokens := estimateMsgTokens(history[chatID])
+	histMu.Unlock()
+	if n < compactMinMessages {
+		return false
+	}
+	// Страховка: не дать recordHistory молча срезать хвост без сводки.
+	if n >= maxHistory-autoCompactNearMax {
+		return true
+	}
+	total := brainCtxSize(cfg)
+	if total <= 0 {
+		return false
+	}
+	used := live.contextTokens()
+	if used > 0 && used*100/total >= autoCompactAtPct {
+		return true
+	}
+	// Оценка по истории (когда prompt_n ещё не измерен или относится к другому чату).
+	if histTokens > 0 && histTokens*100/total >= autoCompactAtPct {
+		return true
+	}
+	return false
 }
 
 // ===== учёт контекста =====
@@ -277,11 +306,12 @@ func contextSnapshot(cfg Config, chatID int64) map[string]any {
 	histMu.Unlock()
 
 	m := map[string]any{
-		"total":           total,
-		"used":            used,
-		"history_msgs":    msgs,
-		"history_tokens":  histTokens,
-		"auto_compact_at": autoCompactAt,
+		"total":               total,
+		"used":                used,
+		"history_msgs":        msgs,
+		"history_tokens":      histTokens,
+		"auto_compact_at_pct": autoCompactAtPct,
+		"max_history":         maxHistory,
 	}
 	if total > 0 && used > 0 {
 		m["pct"] = used * 100 / total

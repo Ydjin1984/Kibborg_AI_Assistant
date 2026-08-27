@@ -21,7 +21,7 @@ func TestSpeechTextStripsCodeAndTables(t *testing.T) {
 }
 
 func TestSpeechTextStripsEmojiAndVS16(t *testing.T) {
-	// U+FE0F — невидимый хвост эмодзи; SuperTonic на нём отдаёт 500.
+	// U+FE0F — невидимый хвост эмодзи; в озвучку не пускаем.
 	raw := "Вход ✅\uFE0F разрешён. ⚠️ Риск низкий."
 	got := speechText(raw)
 	if strings.Contains(got, "\uFE0F") || strings.Contains(got, "✅") || strings.Contains(got, "⚠") {
@@ -34,7 +34,7 @@ func TestSpeechTextStripsEmojiAndVS16(t *testing.T) {
 
 func TestTTSReadyDoesNotHitHealthHTTP(t *testing.T) {
 	// Регресс: панель опрашивает /api/status каждые 1.5 с. Если ttsReady
-	// ходит на /v1/health — SuperTonic забивает лог сотнями 200 OK.
+	// ходит на /v1/health — TTS-сервер забивает лог сотнями 200 OK.
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "health") {
@@ -47,7 +47,7 @@ func TestTTSReadyDoesNotHitHealthHTTP(t *testing.T) {
 	_ = ttsReady(cfg)
 	_ = ttsStatus(cfg)
 	if hits != 0 {
-		t.Fatalf("ttsReady сходил на /health %d раз — лог SuperTonic снова засорится", hits)
+		t.Fatalf("ttsReady сходил на /health %d раз — лог TTS снова засорится", hits)
 	}
 }
 
@@ -57,6 +57,9 @@ func TestSpeechLangCyrillicVsLatin(t *testing.T) {
 	}
 	if g := speechLang("Hello, how are you today?"); g != "en" {
 		t.Fatalf("en → %s", g)
+	}
+	if g := speechLang("Сегодня BTC вырос на support level около resistance"); g != "auto" {
+		t.Fatalf("mixed → %s", g)
 	}
 }
 
@@ -131,32 +134,17 @@ func TestWantsSpokenReply(t *testing.T) {
 
 func TestArmouryNoteForbidsDenyingTTS(t *testing.T) {
 	note := armouryNote([]string{packChat}, handsModeSafe)
-	for _, want := range []string{"SuperTonic", "speak_text", "SAPI"} {
+	for _, want := range []string{"Qwen3-TTS", "speak_text", "SAPI"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("промпт не запрещает враньё про TTS: нет %q", want)
 		}
 	}
 }
 
-func TestTTSThreadPlanUsesBothSockets(t *testing.T) {
-	intra, inter := ttsThreadPlan(Config{})
-	if intra < 2 {
-		t.Fatalf("intra=%d — мало для двух сокетов", intra)
-	}
-	if inter < 2 {
-		t.Fatalf("inter=%d — должен быть хотя бы по потоку на сокет", inter)
-	}
-}
-
-func TestTTSDoesNotBindOpenMPToOneGroup(t *testing.T) {
-	// Регресс: OMP_PROC_BIND=spread + OMP_PLACES=cores на 88 LP сажают
-	// SuperTonic в одну группу Windows — второй Xeon спит.
-	env := strings.Join(ttsProcEnv(44, 2), "\n")
-	if strings.Contains(env, "OMP_PROC_BIND=spread") || strings.Contains(env, "OMP_PLACES=cores") {
-		t.Fatal("OpenMP снова прибит к одной процессорной группе")
-	}
-	if !strings.Contains(env, "OMP_PROC_BIND=false") {
-		t.Fatal("нет запрета OpenMP-affinity")
+func TestTTSProcEnvPinsGPU(t *testing.T) {
+	env := strings.Join(ttsProcEnv(Config{TTSGPU: 1}), "\n")
+	if !strings.Contains(env, "CUDA_VISIBLE_DEVICES=1") {
+		t.Fatal("озвучка должна садиться на TTS_GPU")
 	}
 }
 

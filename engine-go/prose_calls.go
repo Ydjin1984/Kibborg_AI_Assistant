@@ -43,6 +43,12 @@ func parseProseToolCalls(text string, tools []browser.ToolSpec) []toolCall {
 		}
 	}
 
+	// Live failure: final answer was a fenced JSON {"tool":"read_file","path":"…"} — not a
+	// machine tool_call. Recover that shape before scanning name(...).
+	if out := parseJSONProseToolCalls(text, active, needsArgs); len(out) > 0 {
+		return out
+	}
+
 	var out []toolCall
 	for i := 0; i < len(text) && len(out) < maxProseCalls; {
 		rel := strings.IndexByte(text[i:], '(')
@@ -73,6 +79,95 @@ func parseProseToolCalls(text string, tools []browser.ToolSpec) []toolCall {
 		i = end + 1
 	}
 	return out
+}
+
+// parseJSONProseToolCalls recovers {"tool":"name", …} / {"name":"…","arguments":{…}} blobs.
+func parseJSONProseToolCalls(text string, active, needsArgs map[string]bool) []toolCall {
+	var out []toolCall
+	for i := 0; i < len(text) && len(out) < maxProseCalls; {
+		rel := strings.IndexByte(text[i:], '{')
+		if rel < 0 {
+			break
+		}
+		open := i + rel
+		end := matchBrace(text, open)
+		if end < 0 {
+			break
+		}
+		chunk := text[open : end+1]
+		i = end + 1
+		var m map[string]any
+		if err := json.Unmarshal([]byte(chunk), &m); err != nil {
+			continue
+		}
+		name, _ := m["tool"].(string)
+		if name == "" {
+			name, _ = m["name"].(string)
+		}
+		name = strings.TrimSpace(name)
+		if name == "" || !active[name] {
+			continue
+		}
+		args := map[string]any{}
+		switch a := m["arguments"].(type) {
+		case map[string]any:
+			args = a
+		case string:
+			_ = json.Unmarshal([]byte(a), &args)
+		default:
+			for k, v := range m {
+				if k == "tool" || k == "name" || k == "arguments" || k == "id" || k == "type" {
+					continue
+				}
+				args[k] = v
+			}
+		}
+		if len(args) == 0 && needsArgs[name] {
+			continue
+		}
+		raw, err := json.Marshal(args)
+		if err != nil {
+			continue
+		}
+		tc := toolCall{ID: "prose_json_" + strconv.Itoa(len(out)) + "_" + name, Type: "function"}
+		tc.Function.Name = name
+		tc.Function.Arguments = string(raw)
+		out = append(out, tc)
+	}
+	return out
+}
+
+// matchBrace returns the index of the '}' closing the '{' at open, respecting strings.
+func matchBrace(s string, open int) int {
+	depth := 0
+	var quote byte
+	esc := false
+	for k := open; k < len(s); k++ {
+		c := s[k]
+		if quote != 0 {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == quote:
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			quote = c
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return k
+			}
+		}
+	}
+	return -1
 }
 
 // identBefore returns the identifier immediately preceding pos, or "".

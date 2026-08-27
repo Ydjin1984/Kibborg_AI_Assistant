@@ -23,6 +23,9 @@ var codeLang = map[string]string{
 	".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".ini": "ini",
 	".xml": "xml", ".md": "markdown", ".csv": "csv", ".env": "ini",
 	".txt": "", ".log": "", ".conf": "ini", ".gradle": "groovy", ".dockerfile": "dockerfile",
+	".vue": "vue", ".svelte": "svelte", ".r": "r", ".lua": "lua", ".pl": "perl",
+	".zig": "zig", ".nim": "nim", ".ex": "elixir", ".exs": "elixir", ".erl": "erlang",
+	".tf": "hcl", ".hcl": "hcl", ".proto": "protobuf", ".graphql": "graphql",
 }
 
 // isTextFile decides whether a Telegram document is a readable text/code file we can

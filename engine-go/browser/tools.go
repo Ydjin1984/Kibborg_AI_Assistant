@@ -37,8 +37,9 @@ func (s *Session) ToolsWeb() []ToolSpec {
 		tool("read_url", "Страница как текст.", obj(props{
 			"url": str(""),
 		}, "url")),
-		tool("http_get", "HTTP GET (API/JSON).", obj(props{
-			"url": str(""),
+		tool("http_get", "HTTP GET (API/JSON). Auth: authorization=Bearer …", obj(props{
+			"url":           str(""),
+			"authorization": str("Bearer …"),
 		}, "url")),
 		tool("github_search", "Поиск на GitHub.", obj(props{
 			"query": str(""),
@@ -293,7 +294,7 @@ func (s *Session) Dispatch(ctx context.Context, name string, args map[string]any
 	case "read_url":
 		return ReadURLChrome(ctx, argStr(args, "url"), s)
 	case "http_get":
-		return HTTPGet(ctx, argStr(args, "url"))
+		return HTTPGet(ctx, argStr(args, "url"), argStr(args, "authorization"))
 	case "youtube_transcript":
 		return YouTubeTranscript(ctx, argStr(args, "url"), argStr(args, "lang"))
 	case "github_search":
@@ -538,7 +539,7 @@ func (s *Session) DownloadFile(rawURL string) (string, error) {
 		return "", err
 	}
 	rawURL = safe
-	resp, err := cloneHTTP.Get(rawURL)
+	resp, err := publicHTTP.Get(rawURL)
 	if err != nil {
 		return "", err
 	}

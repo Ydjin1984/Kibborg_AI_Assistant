@@ -24,6 +24,26 @@ func argsOf(t *testing.T, tc toolCall) map[string]any {
 	return m
 }
 
+// Live security-tab failure: model ended with a fenced {"tool":"read_file","path":"…"}
+// instead of a machine tool_call — nothing ran and the user got JSON as an "answer".
+func TestParseJSONProseToolCall(t *testing.T) {
+	text := "продолжу глубокий пентест\n\n```json\n" +
+		`{"tool": "read_file", "path": "D:\\Kibborg_DaVinchi_Bot\\pentest_profi_sysx_uz\\endpoints_data.json"}` +
+		"\n```"
+	calls := parseProseToolCalls(text, proseTools())
+	if len(calls) != 1 {
+		t.Fatalf("ждали 1 вызов, получили %d", len(calls))
+	}
+	if calls[0].Function.Name != "read_file" {
+		t.Fatalf("имя = %s", calls[0].Function.Name)
+	}
+	args := argsOf(t, calls[0])
+	path, _ := args["path"].(string)
+	if !strings.Contains(path, "endpoints_data.json") {
+		t.Fatalf("path = %q", path)
+	}
+}
+
 // Verbatim from the live run — including the Windows path with escaped backslashes, which is
 // where a naive unquote turns \t into a TAB.
 func TestParseProseCallFromLiveRun(t *testing.T) {

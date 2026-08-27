@@ -8,7 +8,7 @@ echo   KIBBORG - START ves stack
 echo ============================================================
 echo   Движок сам поднимет то, чего ещё нет:
 echo   - мозг llama-server, если порт свободен
-echo   - SuperTonic TTS, если порт свободен
+echo   - Qwen3-TTS, если порт свободен
 echo   - whisper.cpp, если задан в settings.ini
 echo   Панель: 127.0.0.1:8090
 echo   Стоп всего стека: Stop.cmd
@@ -37,6 +37,9 @@ echo Checking for previous engine instance...
 taskkill /FI "WINDOWTITLE eq KIBBORG-ENGINE*" /F
 taskkill /IM kibborg-go-engine.exe /F
 ping -n 3 127.0.0.1 > "%TEMP%\kibborg-wait.txt"
+
+echo Applying GPU power limits (GPU_POWER_LIMIT_W, UAC only if change needed)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0apply-gpu-power.ps1"
 
 echo Starting: %EXE%
 echo Мозг грузится в VRAM 1-5 мин, либо берёт уже тёплый llama-server.

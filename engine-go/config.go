@@ -18,17 +18,50 @@ type Config struct {
 	CtxSize     int
 	GpuLayers   int
 	TensorSplit string // "0.45,0.55" — доля модели на каждый GPU (по индексу). Пусто = авто.
-	MainGpu     int    // GPU для KV-кэша/compute-буферов. -1 = не задавать (дефолт llama.cpp).
+	// SplitMode: llama-server -sm none|layer|row|tensor. none = один GPU без расщепления
+	// (KIBORG-FAST: нет PCIe-трафика между картами), layer = по слоям (дефолт, KV едет
+	// вместе со слоями — так 3060 получает хвост модели + свой кусок кэша).
+	// Пусто = флаг не передавать (дефолт llama.cpp = layer).
+	SplitMode string
+	MainGpu   int // GPU для KV-кэша/compute-буферов. -1 = не задавать (дефолт llama.cpp).
 	// Device: --device (напр. CUDA1) — жёстко на одну карту; пусто = все GPU / tensor-split.
 	// Qwen 35B: DEVICE пустой + TENSOR_SPLIT (обе 3060).
 	Device string
 	// CacheTypeK/V: тип KV-кэша (f16 по умолчанию llama.cpp). q8_0 экономит VRAM/bandwidth
 	// на 12 GB картах и часто даёт +decode tok/s. Пусто = не передавать флаг.
-	CacheTypeK    string
-	CacheTypeV    string
-	Threads       int
-	Parallel      int    // llama-server --parallel (слоты). 0/пусто = 1 (скорость). 4+ жрёт VRAM.
-	Reasoning     string // llama-server --reasoning: off|on|auto. Пусто = off (без thinking).
+	CacheTypeK string
+	CacheTypeV string
+	// NoKVOffload: --no-kv-offload. Веса остаются на GPU, KV-кэш в RAM. На 2×12 ГБ это
+	// единственный стабильный путь к родному окну 256K у Qwen3.6-35B-A3B (~3 ГБ RAM).
+	NoKVOffload bool
+	// Пустая строка = не передавать флаг (дефолт llama.cpp). "0" отключает.
+	// CtxCheckpoints=0 и CacheRam=0 нужны Qwen3.6-35B-A3B: гибридный attention
+	// инвалидирует checkpoint каждый ход и llama-server зависает/падает
+	// (ggml-org/llama.cpp#22450). Batch/Ubatch режут CUDA-граф на 256K.
+	CtxCheckpoints string
+	CacheRam       string
+	BatchSize      string
+	UbatchSize     string
+	// GPUPowerLimits (GPU_POWER_LIMIT_W): "подстрока имени:ватты" через запятую.
+	// Перед каждым запуском мозга движок режет пиковые транзиенты карт через
+	// nvidia-smi -pl: загрузка GGUF в VRAM роняла 3090 с шины PCIe
+	// (BSOD 0x124 WHEA Surprise Down). Пусто = питание не трогать.
+	GPUPowerLimits string
+	// Threads: llama-server --threads. 0 = все физические ядра обоих сокетов
+	// (на 2×Xeon иначе Windows сажает процесс в одну CPU-группу — второй сокет спит).
+	Threads   int
+	Parallel  int    // llama-server --parallel (слоты). 0/пусто = 1 (скорость). 4+ жрёт VRAM.
+	Reasoning string // llama-server --reasoning: off|on|auto. Пусто = off (без thinking).
+	// Сэмплинг чата. Пустые/0 = официальные Qwen3.8 instruct: top_p 0.80, top_k 20, presence 1.5.
+	// Агент (tool-loop) эти значения не берёт — ему нужна более детерминированная выборка.
+	LLMTopP            float64
+	LLMTopK            int
+	LLMPresencePenalty float64
+	// LLMMaxTokens: жёсткий потолок генерации одного хода. llama-server без max_tokens
+	// генерирует до EOS или конца контекста; новые модели (Gemma 4) EOS в tool-режиме
+	// выдают нестабильно — ход уходил в 5000+ токенов «потока сознания», пока движок
+	// не отменял задачу. Потолок обрезает такой ход: агент получает текст и нудж.
+	LLMMaxTokens  int
 	TelegramToken string
 	TelegramID    string
 
@@ -69,13 +102,15 @@ type Config struct {
 	TradeLeverage float64 // плечо по умолчанию (1 = спот/без плеча)
 	TradeMMR      float64 // maintenance margin rate для оценки ликвидации (напр. 0.005)
 
-	// Озвучка (SuperTonic 3, CPU). Режим always/ask живёт в runtime/tts_mode.json, не здесь.
+	// Озвучка (Qwen3-TTS 0.6B на GPU). Режим always/ask — runtime/tts_mode.json.
 	TTSURL     string // http://127.0.0.1:7788; пусто = auto; off = выключить
-	TTSExe     string // supertonic.exe; пусто = PATH
+	TTSExe     string // python/server: путь к python.exe или server.py; пусто = tts_server/.venv
 	TTSPort    int    // порт serve, по умолчанию 7788
-	TTSVoice   string // F1–F5 женские, M1–M5 мужские. Пусто = F1
-	TTSSteps   int    // качество 5–12, пусто = 8
-	TTSThreads int    // потоки ONNX; 0 = все физические ядра обоих сокетов
+	TTSVoice   string // Serena/Vivian (женские) или Ryan/Aiden… Пусто = Serena
+	TTSModel   string // HF id или локальный путь. Пусто = Qwen3-TTS-12Hz-0.6B-CustomVoice
+	TTSGPU     int    // индекс nvidia-smi для озвучки. -1 = не трогать CUDA_VISIBLE_DEVICES
+	TTSSteps   int    // устарело (SuperTonic); оставлено для совместимости ini
+	TTSThreads int    // устарело (SuperTonic ONNX); оставлено для совместимости ini
 }
 
 // loadConfig parses simple KEY=VALUE lines from settings.ini (ignoring # comments),
@@ -101,22 +136,33 @@ func loadConfig(iniPath string) Config {
 	}
 
 	cfg := Config{
-		LlamaExe:      kv["LLAMA_SERVER"],
-		ModelPath:     kv["MODEL_PATH"],
-		MmprojPath:    kv["MMPROJ_PATH"],
-		BrainPort:     atoiDefault(kv["PORT_BRAIN"], 8083),
-		CtxSize:       atoiDefault(kv["LLAMA_CTX_SIZE"], 32768),
-		GpuLayers:     atoiDefault(kv["LLAMA_GPU_LAYERS"], 99),
-		TensorSplit:   strings.TrimSpace(kv["LLAMA_TENSOR_SPLIT"]),
-		MainGpu:       atoiDefault(kv["LLAMA_MAIN_GPU"], -1),
-		Device:        strings.TrimSpace(kv["LLAMA_DEVICE"]),
-		CacheTypeK:    strings.TrimSpace(kv["LLAMA_CACHE_TYPE_K"]),
-		CacheTypeV:    strings.TrimSpace(kv["LLAMA_CACHE_TYPE_V"]),
-		Threads:       atoiDefault(kv["LLAMA_THREADS"], 28),
-		Parallel:      atoiDefault(kv["LLAMA_PARALLEL"], 1),
-		Reasoning:     strings.ToLower(strings.TrimSpace(kv["LLAMA_REASONING"])),
-		TelegramToken: kv["TELEGRAM_TOKEN"],
-		TelegramID:    kv["TELEGRAM_ID"],
+		LlamaExe:           kv["LLAMA_SERVER"],
+		ModelPath:          kv["MODEL_PATH"],
+		MmprojPath:         kv["MMPROJ_PATH"],
+		BrainPort:          atoiDefault(kv["PORT_BRAIN"], 8083),
+		CtxSize:            atoiDefault(kv["LLAMA_CTX_SIZE"], 32768),
+		GpuLayers:          atoiDefault(kv["LLAMA_GPU_LAYERS"], 99),
+		TensorSplit:        strings.TrimSpace(kv["LLAMA_TENSOR_SPLIT"]),
+		SplitMode:          strings.TrimSpace(kv["LLAMA_SPLIT_MODE"]),
+		MainGpu:            atoiDefault(kv["LLAMA_MAIN_GPU"], -1),
+		Device:             strings.TrimSpace(kv["LLAMA_DEVICE"]),
+		CacheTypeK:         strings.TrimSpace(kv["LLAMA_CACHE_TYPE_K"]),
+		CacheTypeV:         strings.TrimSpace(kv["LLAMA_CACHE_TYPE_V"]),
+		NoKVOffload:        boolDefault(kv["LLAMA_NO_KV_OFFLOAD"], false),
+		CtxCheckpoints:     strings.TrimSpace(kv["LLAMA_CTX_CHECKPOINTS"]),
+		CacheRam:           strings.TrimSpace(kv["LLAMA_CACHE_RAM"]),
+		BatchSize:          strings.TrimSpace(kv["LLAMA_BATCH"]),
+		UbatchSize:         strings.TrimSpace(kv["LLAMA_UBATCH"]),
+		GPUPowerLimits:     strings.TrimSpace(kv["GPU_POWER_LIMIT_W"]),
+		Threads:            atoiDefault(kv["LLAMA_THREADS"], 0),
+		Parallel:           atoiDefault(kv["LLAMA_PARALLEL"], 1),
+		Reasoning:          strings.ToLower(strings.TrimSpace(kv["LLAMA_REASONING"])),
+		LLMTopP:            atofDefault(kv["LLM_TOP_P"], 0.80),
+		LLMTopK:            atoiDefault(kv["LLM_TOP_K"], 20),
+		LLMPresencePenalty: atofDefault(kv["LLM_PRESENCE"], 1.5),
+		LLMMaxTokens:       atoiDefault(kv["LLM_MAX_TOKENS"], 2048),
+		TelegramToken:      kv["TELEGRAM_TOKEN"],
+		TelegramID:         kv["TELEGRAM_ID"],
 
 		TypeWhisperURL:   strings.TrimSpace(kv["TYPEWHISPER_URL"]),
 		TypeWhisperToken: strings.TrimSpace(kv["TYPEWHISPER_TOKEN"]),
@@ -148,6 +194,8 @@ func loadConfig(iniPath string) Config {
 		TTSExe:     strings.TrimSpace(kv["TTS_SERVER"]),
 		TTSPort:    atoiDefault(kv["PORT_TTS"], defaultTTSPort),
 		TTSVoice:   strings.TrimSpace(kv["TTS_VOICE"]),
+		TTSModel:   strings.TrimSpace(kv["TTS_MODEL"]),
+		TTSGPU:     atoiDefault(kv["TTS_GPU"], 1),
 		TTSSteps:   atoiDefault(kv["TTS_STEPS"], 8),
 		TTSThreads: atoiDefault(kv["TTS_THREADS"], 0),
 	}

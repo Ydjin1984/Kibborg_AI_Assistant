@@ -81,6 +81,9 @@ func withMemory(cfg Config, chatID int64, userText string, base []map[string]any
 	if len(blocks) == 0 {
 		return base
 	}
+	// Memory stays as extra role=system after base[0] so packAgentMessages can pick it up.
+	// Before the LLM call, coerceChatMessages / packAgentMessages fold them into ONE leading
+	// system — Qwen3's template rejects any system that is not messages[0].
 	out := make([]map[string]any, 0, len(base)+len(blocks))
 	out = append(out, base[0]) // system prompt stays first
 	out = append(out, blocks...)

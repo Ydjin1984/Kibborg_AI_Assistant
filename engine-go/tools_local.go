@@ -11,6 +11,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,7 @@ import (
 var localToolNames = map[string]bool{
 	"analyze_ticker": true, "size_position": true, "journal_add": true, "journal_stats": true,
 	"analyze_log": true, "scan_text": true, "audit_file": true,
+	"search_hacker_tools": true, "probe_url": true, "write_security_report": true, "download_url": true,
 	"analyze_video": true, "transcribe_media": true, "video_frames": true,
 	"media_info": true, "convert_media": true, "speak_text": true, "read_document": true,
 	"request_pack": true,
@@ -60,7 +62,7 @@ func tradeToolSpecs() []browser.ToolSpec {
 	}
 }
 
-// secopsToolSpecs is the `secops` pack — defensive, read-only analysis on top of secops_wire.
+// secopsToolSpecs is the `secops` pack — defensive analysis + authorized strength-test helpers.
 func secopsToolSpecs() []browser.ToolSpec {
 	return []browser.ToolSpec{
 		spec("analyze_log", "Разбор лога.", objSchema(map[string]any{
@@ -72,13 +74,29 @@ func secopsToolSpecs() []browser.ToolSpec {
 		spec("audit_file", "Аудит файла: хеши, энтропия.", objSchema(map[string]any{
 			"path": strSchema(""),
 		}, "path")),
+		spec("search_hacker_tools", "Каталог Awesome-Hacking (локальный).", objSchema(map[string]any{
+			"query": strSchema("web, appsec, pentest…"),
+			"limit": numSchema("макс. записей"),
+		})),
+		spec("probe_url", "HTTP-проба: статус/заголовки/cookies/пути. НЕ тело JSON — для API download_url/http_get.", objSchema(map[string]any{
+			"url": strSchema("https://…"),
+		}, "url")),
+		spec("download_url", "Скачать URL (JSON/файл) → evidence + /api/files. Для доказательств утечек API.", objSchema(map[string]any{
+			"url":      strSchema("https://…"),
+			"filename": strSchema("имя файла"),
+		}, "url")),
+		spec("write_security_report", "MD-отчёт в runtime/browser/security. Нужны target=URL и body=полный Markdown.", objSchema(map[string]any{
+			"title":  strSchema(""),
+			"target": strSchema("URL цели"),
+			"body":   strSchema("находки markdown"),
+		}, "body")),
 	}
 }
 
 // requestPackSpec is the always-on escalation tool (§4.3).
 func requestPackSpec() browser.ToolSpec {
 	return spec("request_pack",
-		"Подключить набор инструментов: web|browser.read|browser.act|console|files|media|trade|secops.",
+		"Подключить набор инструментов: web|browser.read|browser.act|console|files|system|media|trade|secops.",
 		objSchema(map[string]any{
 			"pack":   strSchema(""),
 			"reason": strSchema("зачем"),
@@ -112,6 +130,14 @@ func dispatchLocalTool(t *Task, cfg Config, name, toolCallID string, args map[st
 		return toolScanText(args), true
 	case "audit_file":
 		return toolAuditFile(args), true
+	case "search_hacker_tools":
+		return toolSearchHackerTools(args), true
+	case "probe_url":
+		return toolProbeURL(args), true
+	case "download_url":
+		return toolDownloadURL(t, args), true
+	case "write_security_report":
+		return toolWriteSecurityReport(t, args), true
 	}
 	return ToolResult{}, false
 }
@@ -256,16 +282,106 @@ func toolAuditFile(args map[string]any) ToolResult {
 	if path == "" {
 		return failResult("нужен path", nil)
 	}
-	data, err := os.ReadFile(path)
+	abs, err := resolveAuditPath(path)
+	if err != nil {
+		return failResult(err.Error(), err)
+	}
+	data, err := os.ReadFile(abs)
 	if err != nil {
 		return failResult("не прочитал файл: "+redactErr(err), err)
 	}
-	audit := secops.AuditFile(path, data)
+	audit := secops.AuditFile(abs, data)
 	out := audit.RenderMarkdown()
 	if looksTextish(data) {
 		out += "\n\n" + secops.ScanText(string(capBytes(data, 2<<20))).RenderMarkdown("Скан содержимого")
 	}
 	return okResult(out, nil)
+}
+
+// resolveAuditPath allows files under the engine cwd or hands roots — never arbitrary
+// system paths like %USERPROFILE%\.ssh (secrets would land in chat via ScanText).
+func resolveAuditPath(path string) (string, error) {
+	if abs, err := safeEnginePath(path); err == nil {
+		return abs, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("путь не разбирается: %w", err)
+	}
+	abs = filepath.Clean(abs)
+	if insideHandsRoots(abs) {
+		return abs, nil
+	}
+	return "", fmt.Errorf("путь вне рабочих каталогов — audit_file читает только engine cwd и hands roots")
+}
+
+func toolSearchHackerTools(args map[string]any) ToolResult {
+	query := argString(args, "query")
+	limit := int(argFloatOr(args, "limit", 20))
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	cat, err := secops.SearchCatalog(query, limit)
+	if err != nil {
+		return failResult("каталог недоступен: "+err.Error(), err)
+	}
+	title := "Hacker Tools"
+	if query != "" {
+		title = "Hacker Tools · " + query
+	}
+	return okResult(secops.RenderCatalogMarkdown(cat, title), nil)
+}
+
+func toolProbeURL(args map[string]any) ToolResult {
+	raw := argString(args, "url")
+	if raw == "" {
+		return failResult("нужен url", nil)
+	}
+	rep, err := secops.ProbeURL(raw)
+	if err != nil {
+		return failResult("проба не удалась: "+err.Error(), err)
+	}
+	return okResult(rep.RenderMarkdown(), nil)
+}
+
+func toolDownloadURL(t *Task, args map[string]any) ToolResult {
+	res, err := secops.DownloadURL(argString(args, "url"), argString(args, "filename"))
+	if err != nil {
+		return failResult(err.Error(), err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "сохранено: %s\n", res.Path)
+	fmt.Fprintf(&b, "скачать: /api/files/%s\n", res.URL)
+	fmt.Fprintf(&b, "bytes=%d content-type=%s\n", res.Bytes, res.ContentType)
+	if res.FinalURL != "" {
+		fmt.Fprintf(&b, "final-url: %s\n", res.FinalURL)
+	}
+	if res.Warning != "" {
+		fmt.Fprintf(&b, "⚠ %s\n", res.Warning)
+	}
+	if res.Preview != "" {
+		fmt.Fprintf(&b, "preview:\n%s\n", res.Preview)
+	}
+	b.WriteString("В ответе человеку ОБЯЗАТЕЛЬНО дай кликабельную ссылку /api/files/… — панель покажет кнопку скачивания.")
+	// Путь только в Artifacts результата — appendToolMsg сам AddArtifacts (без двойной записи).
+	return okResult(b.String(), []string{res.Path})
+}
+
+func toolWriteSecurityReport(t *Task, args map[string]any) ToolResult {
+	res, err := secops.WriteSecurityReport(secops.SecurityReportInput{
+		Title:  argString(args, "title"),
+		Target: argString(args, "target"),
+		Body:   argString(args, "body"),
+	})
+	if err != nil {
+		return failResult(err.Error(), err)
+	}
+	return okResult("отчёт записан: "+res.Path+"\nскачать: /api/files/"+res.URL+
+		"\nЭто ФИНАЛ задачи: кратко скажи человеку, что проверка завершена, и дай ссылку на отчёт. "+
+		"Не уходи в web_search/OWASP после записи отчёта.", []string{res.Path})
 }
 
 // ===== schema helpers (mirror browser/tools.go so specs read the same) =====

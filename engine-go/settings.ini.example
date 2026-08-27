@@ -2,12 +2,12 @@
 # После изменений перезапусти стек (Stop затем Start или через Меню).
 
 # === МОДЕЛЬ МОЗГА (llama-server) ===
-# Полный путь к GGUF. Меняй здесь ИЛИ из вкладки «Модели» / команды /models.
-# По умолчанию: Qwen3.6-35B-A3B (Unsloth UD-IQ4_XS) — агент + vision.
-MODEL_PATH=models\brain\Qwen3.6-35B-A3B\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+# Полный путь к GGUF. Меняй здесь, кликом в правой колонке или /models use.
+# Qwen3.6-35B-A3B IQ4_XS — агент + зрение. Родное окно 256K: KV в RAM, веса на 2×3060.
+MODEL_PATH=models\brain\Abiray__Qwen3.8-27B-Q4_K_M-GGUF\Qwen3.8-27B-Q4_K_M.gguf
 
 # mmproj для зрения. Пусто = текст only. auto = mmproj рядом с MODEL_PATH.
-MMPROJ_PATH=models\brain\Qwen3.6-35B-A3B\mmproj-BF16.gguf
+MMPROJ_PATH=models\brain\Abiray__Qwen3.8-27B-Q4_K_M-GGUF\mmproj-F16.gguf
 # MMPROJ_PATH=auto
 
 # === ИСПОЛНЯЕМЫЙ ФАЙЛ LLAMA-SERVER (ОБЯЗАТЕЛЬНО) ===
@@ -26,22 +26,47 @@ PORT_BRAIN=8083
 PORT_ENGINE=8002
 
 # === ПАРАМЕТРЫ LLAMA-SERVER (настрой под железо) ===
-LLAMA_THREADS=28
-LLAMA_CTX_SIZE=32768
+# 0 = все физические ядра обоих сокетов. Иначе Windows сажает llama в одну CPU-группу.
+LLAMA_THREADS=0
+# 256K — родное окно Qwen3.8 (KIBORG-LONG). Для макс. tok/s без 256K см. KIBORG-FAST (128K).
+LLAMA_CTX_SIZE=262144
 LLAMA_GPU_LAYERS=99
-# 1 = макс. скорость чата; 4+ = много KV-кэша, decode тормозит на 12 GB GPU
+# 1 = макс. скорость чата; 4+ = много KV-кэша, decode тормозит
 LLAMA_PARALLEL=1
-# off = без thinking (быстро); on = длинные «размышления» Qwen
+# off = без thinking (быстро, для агента); on = длинные «размышления» Qwen
 LLAMA_REASONING=off
 
-# --- GPU (критично для лагов UI) ---
-# Qwen 35B на обе 3060: DEVICE пустой + TENSOR_SPLIT. Больше веса на свободную GPU1.
+# Официальный сэмплинг Qwen3.8 instruct (non-thinking).
+LLM_TOP_P=0.80
+LLM_TOP_K=20
+LLM_PRESENCE=1.5
+# Потолок генерации одного хода: без него Gemma 4 (нестабильный EOS) уходит
+# в 5000+ токенов на ход. 2048 ≈ 1500 слов; 0 = не передавать max_tokens.
+LLM_MAX_TOKENS=2048
+
+# --- GPU: KIBORG-LONG (профиль B, целевой под 256K на 3090+3060) ---
+# После свапа слотов порядок совпадает с nvidia-smi, проверяй --list-devices:
+#   CUDA0 = RTX 3090 24 ГБ — ~86% весов + compute + основной KV
+#   CUDA1 = RTX 3060 12 ГБ — хвост слоёв + свой кусок KV
+# llama.cpp не умеет «только KV на вторую карту» — кэш едет вместе со слоями.
+# Готовые профили: gpu-profiles\ (KIBORG-FAST / KIBORG-LONG / BENCH-* + bench-gpu.ps1).
 LLAMA_DEVICE=
-LLAMA_TENSOR_SPLIT=0.35,0.65
+LLAMA_SPLIT_MODE=layer
+LLAMA_TENSOR_SPLIT=0.86,0.14
 LLAMA_MAIN_GPU=0
-# KV cache q8_0 вместо f16: меньше VRAM/bandwidth на 12 GB картах.
-LLAMA_CACHE_TYPE_K=q8_0
-LLAMA_CACHE_TYPE_V=q8_0
+# KV q4_0 — 256K с запасом под mmproj. q8_0@256K влезает впритык (см. BENCH-LONG-Q8).
+LLAMA_CACHE_TYPE_K=q4_0
+LLAMA_CACHE_TYPE_V=q4_0
+LLAMA_NO_KV_OFFLOAD=false
+# Hybrid Qwen3.6/3.8: 0 / 0 иначе checkpoint инвалидируется каждый ход и сервер падает.
+LLAMA_CTX_CHECKPOINTS=0
+LLAMA_CACHE_RAM=0
+LLAMA_BATCH=512
+LLAMA_UBATCH=256
+# --- Лимит мощности GPU ---
+# Пусто = сток BIOS (макс. tok/s). Если BSOD 0x124 на заливке GGUF:
+# GPU_POWER_LIMIT_W=3090:280,3060:120
+GPU_POWER_LIMIT_W=
 
 # === GO ДВИЖОК (внутренний) ===
 # Здесь модели нет — Go-бинарник содержит только детерминированную логику инструментов
@@ -95,17 +120,20 @@ PORT_WHISPER=8081
 # Путь к ffmpeg (пусто = искать в PATH)
 FFMPEG=
 
-# === ОЗВУЧКА (SuperTonic 3, CPU) ===
-# pip install "supertonic[serve]"  — движок сам поднимает `supertonic serve` на PORT_TTS.
+# === ОЗВУЧКА (Qwen3-TTS 0.6B CustomVoice, GPU) ===
+# Один раз: tts_server\install.cmd  — venv + torch CUDA + qwen-tts (~2 ГБ модель при старте).
 # Режим always/ask НЕ здесь: тумблер в шапке панели или /tts в Telegram (runtime/tts_mode.json).
 # TTS_URL=off — полностью выключить. Пусто = http://127.0.0.1:7788
 TTS_URL=
 TTS_SERVER=
 PORT_TTS=7788
-# F1–F5 женские, M1–M5 мужские.
-TTS_VOICE=F1
+# Женские: Serena (тёплый), Vivian (яркий). Мужские: Ryan, Aiden…
+# Старые F1–F5/M1–M5 тоже принимаются (мапятся на Serena/Vivian/Ryan…).
+TTS_VOICE=Serena
+TTS_MODEL=Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+# Индекс GPU из nvidia-smi (1 = RTX 3060 рядом с 3090). -1 = не трогать CUDA_VISIBLE_DEVICES.
+TTS_GPU=1
 TTS_STEPS=8
-# Потоки ONNX. 0 = все физические ядра обоих сокетов (на 2×Xeon иначе грузится один).
 TTS_THREADS=0
 
 # === ЗАВЕРШЕНИЕ РАБОТЫ ===

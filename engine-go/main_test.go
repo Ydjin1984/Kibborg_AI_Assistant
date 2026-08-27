@@ -94,23 +94,28 @@ func TestPackAgentMessagesTrimsHistory(t *testing.T) {
 		{"role": "assistant", "content": "a5"},
 	}
 	msgs := packAgentMessages(base, "SYS", "task now")
-	if msgs[0]["content"] != "SYS" {
-		t.Fatalf("system must be agent prompt, got %v", msgs[0]["content"])
+	sys0, _ := msgs[0]["content"].(string)
+	if msgs[0]["role"] != "system" || !strings.Contains(sys0, "SYS") {
+		t.Fatalf("system must start with agent prompt, got %v", msgs[0])
 	}
-	// system + <=1 mem + <=6 hist + task
-	if len(msgs) > 1+agentMaxMemBlocks+agentMaxHistMsgs+1 {
+	if !strings.Contains(sys0, "mem ") {
+		t.Fatal("memory must be folded into the single leading system message")
+	}
+	// one system + <=6 hist + task — no second role=system
+	if len(msgs) > 1+agentMaxHistMsgs+1 {
 		t.Fatalf("too many messages: %d", len(msgs))
+	}
+	for i, m := range msgs {
+		if i == 0 {
+			continue
+		}
+		if role, _ := m["role"].(string); role == "system" {
+			t.Fatalf("extra system at index %d breaks Qwen chat template", i)
+		}
 	}
 	last := msgs[len(msgs)-1]
 	if last["role"] != "user" || last["content"] != "task now" {
 		t.Fatalf("last must be task, got %+v", last)
-	}
-	// memory capped
-	for _, m := range msgs {
-		if c, ok := m["content"].(string); ok && len(c) > agentMaxMsgChars+10 && m["role"] != "system" {
-			// system agent prompt can be longer; memory is role=system too but capped by mem chars
-			_ = c
-		}
 	}
 	if !isContextOverflow(fmt.Errorf(`LLM HTTP 400: exceed_context_size_error n_prompt_tokens=72032`)) {
 		t.Fatal("must detect context overflow")

@@ -87,7 +87,10 @@ var chartCommands = []string{"/chart", "/график"}
 // analyzeCommands (text) run the deterministic ticker analysis over live Binance data.
 var analyzeCommands = []string{"/analyze", "/анализ", "/разбор"}
 
-const maxHistory = 12 // sliding window of recent user/assistant messages per chat
+// maxHistory — жёсткий потолок реплик на чат. Раньше было 12: при окне 256K это
+// выбрасывало ТЗ и находки задолго до заполнения контекста. Автосжатие (/compact)
+// должно успеть пересказать старое ДО этой обрезки (см. maybeAutoCompact).
+const maxHistory = 80
 
 var (
 	histMu  sync.Mutex
@@ -124,6 +127,10 @@ func main() {
 	if cfg.TelegramToken == "" {
 		log.Fatal("TELEGRAM_TOKEN не задан (ни в settings.ini, ни в env)")
 	}
+	// Конфиг для stateless-хендлеров (webCfg) фиксируем СРАЗУ, а не в newWebMux:
+	// иначе при PORT_WEB=0 (веб выключен) webCfg остаётся нулевым, и /models use
+	// из Telegram пытался бы гасить мозг на порту 0 и поднимать llama-server с --port 0.
+	setWebCfg(cfg)
 	// Remember the token so redact() can strip it from any error/log line before it leaks.
 	secretToken = cfg.TelegramToken
 	// Launch the LLM in the background; chat waits for it to become ready.
@@ -527,6 +534,7 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 	isLogs, logsArg := parseCommand(text, logsCommands)
 	isScan, scanArg := parseCommand(text, scanCommands)
 	isAudit, _ := parseCommand(text, auditCommands)
+	isStress, stressArg := parseCommand(text, stressCommands)
 	isCompact, _ := parseCommand(text, compactCommands)
 	isHW, _ := parseCommand(text, hardwareCommands)
 	isModels, modelsArg := parseCommand(text, modelsCommands)
@@ -536,19 +544,21 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 		sendTelegramWithMarkup(botAPI, chatID,
 			"Kibborg на связи. Просто пиши сообщение (или голосовое) — я отвечаю через локальную LLM.\n"+
 				"🎛 /menu — панель: руки, стоп, сжатие контекста, статус. Список команд — кнопка «☰» слева от поля ввода.\n"+
-				"🖥 Рабочий стол: «сделай скриншот экрана», «что у меня открыто», «открой блокнот и напиши…» — я вижу экран и управляю мышью и клавиатурой.\n"+
+				"💻 Рабочий стол: «сделай скриншот экрана», «что у меня открыто», «открой блокнот и напиши…» — я вижу экран и управляю мышью и клавиатурой.\n"+
 				"🗜 /compact — сжать историю диалога в сводку, не теряя сути.\n"+
 				"🎙 Голос: TypeWhisper (HTTP API) → текст → ответ; fallback whisper.cpp. В Web — кнопка 🎙.\n"+
 				"🎬 Видео: пришли ролик (или ссылку) — распознаю речь, посмотрю кадры и отвечу по содержанию. "+
 				"С подписью «найди этот проект на гитхабе» — сразу и найду. Файл на диске: «разбери D:\\видео\\урок.mp4».\n"+
 				"🔊 /tts — озвучка ответов: `auto` всегда, `ask` по запросу. `/speak` — прочитать последний ответ.\n"+
-				"🖥 /hw — тест железа: сокеты, ядра, потоки, RAM, карты, VRAM.\n"+
-				"📦 /models [запрос] — каталог GGUF Hugging Face под твоё железо. Скачать: /models get owner/repo file.gguf\n"+
+				"💻 /hw — тест железа: сокеты, ядра, потоки, RAM, карты, VRAM.\n"+
+				"📦 /models — модели на диске, что в VRAM и прогресс скачивания. "+
+				"Скачать: /models get owner/repo file.gguf · переключить: /models use file.gguf\n"+
 				"📊 /analyze <тикер> — детерминированный разбор по данным Binance (режим, скор, Герчик, RSI-фильтр). Пример: /analyze BTC\n"+
 				"📈 /chart — торговый разбор графика: отправь команду, затем пришли скриншот или файл графика.\n"+
 				"📐 /size — размер позиции по риску. Пример: /size BTC entry=50000 stop=49000 tp=53000 risk=1.5 lev=10\n"+
 				"📝 /log — записать сделку в журнал · /journal — статистика и список · /close <id> <цена> — закрыть сделку\n"+
 				"🛡 /logs — анализ логов (по умолчанию свои: аномалии, всплески ошибок, утечки секретов; журналы агента — `/logs runtime/hands.jsonl` и `/logs runtime/tasks.jsonl`) · /scan <текст> — поиск IOC и сигнатур атак · /audit — хеш+энтропия файла (пришли документом с подписью)\n"+
+				"🛡 /stress [light|required|full] <url> — тест на прочность: лайт = проба; обязательный = проба+чеклист; полный = +браузер+CLI. Отчёт в runtime/browser/security/. Алиасы: /прочность /websec /pentest\n"+
 				"🌐 /browser <задача> или /agent <задача> — полный агент: терминал, файлы, поиск в интернете, Chrome, Agent Reach.\n"+
 				"   В обычном чате тоже: «найди…», «запусти…», «прочитай файл…» — сам выберет инструменты (нужен TELEGRAM_ID).\n"+
 				"⏹ /stop — остановить текущую задачу (работает сразу, даже посреди команды).\n"+
@@ -595,15 +605,15 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 			return
 		}
 		// 1) deterministic report (source of truth) + position sizing, then 2) an LLM narration.
-		sendTelegramMessage(botAPI, chatID, renderReport(report)+sizingBlock(cfg, report))
+		sendTelegramSections(botAPI, chatID, telegramizeReport(renderReport(report)+sizingBlock(cfg, report)))
 		log.Printf("[ANALYZE] %s → %s/%s for %d", report.Symbol, report.Regime, report.Direction, chatID)
 		if brainReady(cfg.BrainPort) {
 			lm := &liveMessage{botAPI: botAPI, chatID: chatID, stopTyping: stop}
 			narration, stats, nerr := narrateReport(cfg, report, "разбор "+report.Symbol, lm.update)
 			if nerr == nil && strings.TrimSpace(narration) != "" {
-				lm.finish("🧠 " + narration + statsFooter(stats))
+				lm.finish("Комментарий нейросети — интерпретация, не источник чисел\n\n" + narration + statsFooter(stats))
 			} else if lm.msgID != 0 {
-				lm.finish("🧠 " + narration) // salvage whatever streamed
+				lm.finish("Комментарий нейросети — интерпретация, не источник чисел\n\n" + narration)
 			} else {
 				stop() // nothing to show — just drop the typing indicator
 			}
@@ -696,7 +706,38 @@ func handleMessage(cfg Config, botAPI string, allow map[int64]bool, msg *tgMessa
 		return
 	case isAudit:
 		sendTelegramMessage(botAPI, chatID,
-			"🧬 Пришли файл документом с подписью `/audit` — посчитаю SHA256/SHA1/MD5, энтропию и тип (детект упаковки/шифрования). Для скана текста на IOC — `/scan <текст>`.")
+			"🧬 Пришли файл документом с подписью `/audit` — посчитаю SHA256/SHA1/MD5, энтропию и тип (детект упаковки/шифрования). Для скана текста на IOC — `/scan <текст>`.\n"+
+				"Тест сайта на прочность: `/stress https://example.com`.")
+		return
+	case isStress:
+		if allow == nil {
+			sendTelegramMessage(botAPI, chatID,
+				"🔒 /stress доступен только из allowlist (задай TELEGRAM_ID): агент ходит в сеть и пишет отчёты на диск.")
+			return
+		}
+		if !brainReady(cfg.BrainPort) {
+			sendTelegramMessage(botAPI, chatID, "⏳ Модель ещё грузится. Повтори запрос чуть позже.")
+			return
+		}
+		target, focus, mode := splitStressArg(stressArg)
+		if target == "" {
+			sendTelegramMessage(botAPI, chatID, stressHelpText())
+			return
+		}
+		task := stressAuditTask(target, focus, "", mode)
+		stop := startTyping(botAPI, chatID)
+		defer stop()
+		actor := actorFor(channelTelegram, chatID, isOwnerChat(allow, chatID))
+		base := withMemory(cfg, chatID, task, baseMessages(chatID))
+		res := runLayeredAgent(agentRequest{
+			cfg: cfg, actor: actor, baseMsgs: base, input: task,
+			status:     telegramStatus(botAPI, chatID),
+			memSummary: memorySummaryFor(chatID),
+			hintPacks:  stressHintPacks(mode),
+		})
+		stop()
+		deliverAgentResult(cfg, botAPI, chatID, "[stress/"+string(mode)+"] "+target, res)
+		maybeAutoCompact(cfg, chatID, func(note string) { sendTelegramMessage(botAPI, chatID, note) })
 		return
 	case isChart:
 		setChartPending(chatID, chartExtra)
@@ -790,7 +831,7 @@ func handleChartAnalysis(cfg Config, botAPI string, allow map[int64]bool, chatID
 			sendTelegramMessage(botAPI, chatID, "❌ "+err.Error())
 			return
 		}
-		sendTelegramMessage(botAPI, chatID, renderReport(report)+sizingBlock(cfg, report))
+		sendTelegramSections(botAPI, chatID, telegramizeReport(renderReport(report)+sizingBlock(cfg, report)))
 		return
 	}
 	task := chartTaskText(symbol, extra, desc)
@@ -822,10 +863,16 @@ func chartTaskText(symbol, extra, desc string) string {
 }
 
 // telegramStatus throttles step statuses so a long task does not spam the chat.
-func telegramStatus(botAPI string, chatID int64) func(string) {
+func telegramStatus(botAPI string, chatID int64) StatusFn {
 	var last string
-	return func(s string) {
-		s = strings.TrimSpace(s)
+	return func(u StatusUpdate) {
+		s := strings.TrimSpace(u.Text)
+		// В Web имя tool — badge; в Telegram badge нет — подставляем имя в строку.
+		if u.Tool != "" && s != "" && !strings.Contains(s, u.Tool) && !strings.Contains(s, "`"+u.Tool+"`") {
+			s = "`" + u.Tool + "` · " + s
+		} else if u.Phase == "brain" && s != "" && !strings.Contains(s, "мозг") {
+			s = "🧠 " + s
+		}
 		if s == "" || s == last {
 			return
 		}

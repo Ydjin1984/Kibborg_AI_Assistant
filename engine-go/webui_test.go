@@ -136,7 +136,8 @@ func TestWebStatusShape(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"brain_ready", "whisper", "chrome_tabs", "chats", "uptime_sec"} {
+	for _, key := range []string{"brain_ready", "whisper", "chrome_tabs", "chats", "uptime_sec",
+		"download", "brain_switch", "local_models"} {
 		if _, ok := s[key]; !ok {
 			t.Errorf("status is missing %q: %v", key, s)
 		}
@@ -253,9 +254,50 @@ func TestWebIconsEmbedded(t *testing.T) {
 	}
 }
 
+// Кибербезопасность: подтверждение опасного шага и поле ответа должны жить НА ВКЛАДКЕ.
+// Раньше streamInto игнорировал waiting — агент спрашивал, а кнопок Выполнить/Отказать не было;
+// контекст и «да»/«нет» требовали прыжка в Чат.
+func TestSecurityTabHasConfirmAndContext(t *testing.T) {
+	html := string(webIndexHTML)
+	for _, want := range []string{
+		`id="secContext"`, `id="secFollow"`, `id="secFollowSend"`, `id="secOut"`,
+		`ev.waiting`, `resumeRoot`, `renderConfirm(panel`,
+		`/api/security_audit`, `/api/confirm`,
+		`id="secCtxAttachBtn"`, `id="secFollowAttachBtn"`, `id="secCtxFile"`, `id="secFollowFile"`,
+		`accept="*/*"`, `setSecCtxFile`, `setSecFollowFile`, `opts.body`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("вкладка Кибербезопасность без %q — подтверждение/контекст/вложения потеряны", want)
+		}
+	}
+}
+
+// Стоп обязан быть в шапке (глобально, с любой вкладки) и дублироваться под чатом + Esc.
+// Раньше кнопка жила только в undock вкладки «Чат» — на Агент/Видео/Кибербезопасность её не было видно.
+func TestWebHeaderHasGlobalStop(t *testing.T) {
+	html := string(webIndexHTML)
+	for _, want := range []string{
+		`id="headStopBtn"`, `id="stopBtn"`, `function doStop(`, `paintStopLive`,
+		`/api/stop`, `gbtn stop`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("в панели нет глобального стопа: отсутствует %q", want)
+		}
+	}
+	head := strings.Index(html, "<header>")
+	headEnd := strings.Index(html, "</header>")
+	if head < 0 || headEnd <= head {
+		t.Fatal("нет <header>")
+	}
+	if !strings.Contains(html[head:headEnd], `id="headStopBtn"`) {
+		t.Fatal("headStopBtn должен стоять в шапке, а не только во вкладке чата")
+	}
+}
+
 func TestModelsTabAndHardwareAPI(t *testing.T) {
 	html := string(webIndexHTML)
-	for _, want := range []string{`data-tab="models"`, `id="tab-models"`, `id="hwRun"`, `id="modList"`, "/api/hardware", "/api/models"} {
+	for _, want := range []string{`data-tab="models"`, `id="tab-models"`, `id="hwRun"`, `id="modList"`,
+		`id="brainSide"`, `id="sideModels"`, `id="dlBox"`, "/api/hardware", "/api/models"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("в панели нет %q", want)
 		}

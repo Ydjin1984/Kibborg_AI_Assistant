@@ -53,7 +53,7 @@ func videoToolSpecs() []browser.ToolSpec {
 				"path": strSchema(""),
 			}, "path")),
 		spec("speak_text",
-			"Озвучить фразу SuperTonic. Не SAPI и не ffmpeg.",
+			"Озвучить фразу Qwen3-TTS (женский голос, GPU). Не SAPI и не ffmpeg.",
 			objSchema(map[string]any{
 				"text": strSchema("что сказать"),
 			}, "text")),

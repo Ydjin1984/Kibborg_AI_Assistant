@@ -33,13 +33,14 @@ func handleAPITTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mode := currentTTSMode()
+	cfg := curWebCfg()
 	writeJSON(w, map[string]any{
 		"mode":    mode,
 		"auto":    mode == ttsModeAuto,
 		"label":   ttsModeShort(mode),
-		"status":  ttsStatus(webCfg),
-		"voice":   orDash(strings.TrimSpace(webCfg.TTSVoice)),
-		"enabled": ttsWanted(webCfg),
+		"status":  ttsStatus(cfg),
+		"voice":   orDash(strings.TrimSpace(cfg.TTSVoice)),
+		"enabled": ttsWanted(cfg),
 	})
 }
 
@@ -56,7 +57,7 @@ func handleAPISpeak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[TTS] панель «Озвучить»: исходник %d символов", utf8.RuneCountInString(req.Text))
-	sf, err := synthesizeSpeech(webCfg, req.Text)
+	sf, err := synthesizeSpeech(curWebCfg(), req.Text)
 	if err != nil {
 		log.Printf("[TTS] панель: %v", err)
 		writeJSON(w, map[string]any{"error": err.Error()})

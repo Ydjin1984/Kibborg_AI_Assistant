@@ -17,12 +17,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/4] gofmt -l .
-gofmt -l . > "%TEMP%\kibborg-gofmt.txt" 2>&1
-if errorlevel 1 (
+echo [1/4] gofmt -l .  (без чужих клонов в hacker-tools/)
+REM SecLists / nuclei-templates / PayloadsAllTheThings — внешние репо, их gofmt не наш долг.
+gofmt -l . 2>"%TEMP%\kibborg-gofmt-err.txt" | findstr /V /I "hacker-tools\\SecLists hacker-tools\\nuclei-templates hacker-tools\\PayloadsAllTheThings hacker-tools/SecLists hacker-tools/nuclei-templates hacker-tools/PayloadsAllTheThings" > "%TEMP%\kibborg-gofmt.txt"
+if errorlevel 1 if exist "%TEMP%\kibborg-gofmt-err.txt" (
+  for %%A in ("%TEMP%\kibborg-gofmt-err.txt") do if not "%%~zA"=="0" (
     echo [FAIL] gofmt failed.
-    type "%TEMP%\kibborg-gofmt.txt" 2>nul
+    type "%TEMP%\kibborg-gofmt-err.txt" 2>nul
     exit /b 1
+  )
 )
 for %%A in ("%TEMP%\kibborg-gofmt.txt") do set "GOFMT_SIZE=%%~zA"
 if not "%GOFMT_SIZE%"=="0" (

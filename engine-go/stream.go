@@ -82,10 +82,13 @@ func (lm *liveMessage) update(full string) {
 func (lm *liveMessage) finish(final string) {
 	final = stripThink(final)
 	if lm.msgID == 0 {
-		sendTelegramMessage(lm.botAPI, lm.chatID, final)
+		sendTelegramSections(lm.botAPI, lm.chatID, final)
 		return
 	}
-	chunks := splitMessage(final, 3000)
+	chunks := packSections(splitBySectionHeaders(final), 3000)
+	if len(chunks) == 0 {
+		return
+	}
 	html := toTelegramHTML(chunks[0])
 	if !editTelegramRaw(lm.botAPI, lm.chatID, lm.msgID, html, "HTML") {
 		if !editTelegramRaw(lm.botAPI, lm.chatID, lm.msgID, stripTags(html), "") {

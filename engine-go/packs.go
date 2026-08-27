@@ -86,7 +86,7 @@ func normalizePacks(in []string) []string {
 			p = packMedia
 		case "trading":
 			p = packTrade
-		case "security":
+		case "security", "sec", "hacker", "pentest", "websec", "stress":
 			p = packSecops
 		case "desktop", "gui", "os", "screen", "рабочий стол", "экран", "windows":
 			p = packSystem
@@ -254,7 +254,7 @@ func packsSummaryForPrompt() string {
 		{packFiles, "локальные файлы: прочитать, записать, список, удалить"},
 		{packMedia, "видео и аудио: разобрать ролик (речь в текст, кадры глазами), скачать, субтитры, конвертация и нарезка"},
 		{packTrade, "разбор тикера по Binance (скоринг + уровни и сценарий по Герчику), размер позиции, журнал сделок"},
-		{packSecops, "разбор логов, скан на IOC, аудит файла"},
+		{packSecops, "логи, IOC, аудит файла, каталог Hacker Tools, HTTP-проба URL, MD-отчёт теста на прочность"},
 		{packSystem, "рабочий стол ПК: скриншот экрана, окна, клавиатура, мышь, процессы, запуск программ, буфер обмена"},
 	}
 	var b strings.Builder

@@ -16,7 +16,8 @@ import (
 
 var (
 	engineProcMu sync.Mutex
-	engineProcs  []*os.Process // llama-server / whisper-server processes WE launched
+	engineProcs  []*os.Process // llama-server / whisper-server / TTS / embed — процессы WE launched
+	brainProc    *os.Process   // именно МОЗГ (llama-server на PORT_BRAIN), если подняли мы
 )
 
 // registerEngineProc remembers a child engine process for optional stop-on-exit.
@@ -24,6 +25,32 @@ func registerEngineProc(p *os.Process) {
 	engineProcMu.Lock()
 	engineProcs = append(engineProcs, p)
 	engineProcMu.Unlock()
+}
+
+// trackBrainProc remembers the llama-server process WE started. Переключение модели
+// обязано гасить ТОЛЬКО его, а не весь engineProcs (там ещё whisper/TTS/embed — их
+// трогать нельзя, иначе после смены модели умирает озвучка и распознавание речи).
+func trackBrainProc(p *os.Process) {
+	engineProcMu.Lock()
+	brainProc = p
+	engineProcMu.Unlock()
+}
+
+// forgetBrainProc отвязывает pid мозга (убит при переключении) от реестра движков.
+func forgetBrainProc(pid int) {
+	engineProcMu.Lock()
+	defer engineProcMu.Unlock()
+	if brainProc != nil && brainProc.Pid == pid {
+		brainProc = nil
+	}
+	var out []*os.Process
+	for _, p := range engineProcs {
+		if p != nil && p.Pid == pid {
+			continue
+		}
+		out = append(out, p)
+	}
+	engineProcs = out
 }
 
 // stopLaunchedEngines kills every engine process this bot started (never ones it found

@@ -141,6 +141,12 @@ func TestGuardNuclearShortVsLongHands(t *testing.T) {
 		"Restart-Computer -Force",
 		`Remove-Item C:\ -Recurse -Force`,
 		"rm -rf /",
+		// Wrappers must not bypass nuclear detection (fields[0] alone is not enough).
+		"cmd /c format C: /fs:ntfs /q /y",
+		"cmd.exe /c shutdown /s /t 0",
+		`powershell -NoProfile -Command format C:`,
+		`powershell -Command Format-Volume -DriveLetter C`,
+		`pwsh -c Clear-Disk -Number 0 -RemoveData`,
 	}
 	for _, c := range cmds {
 		if d := guardToolCall(safeActor(), "run_command", map[string]any{"command": c}); d.Action != ActionHardBlock {
@@ -174,6 +180,47 @@ func TestGuardCriticalProcess(t *testing.T) {
 	if d := guardToolCall(fullActor(), "kill_process", map[string]any{"name": "notepad"}); d.Action != ActionAllow {
 		t.Errorf("[full] kill notepad → %s; хотели allow", d.Action)
 	}
+	// Unresolvable PID: safe hard_block, full ask — never silent allow (lsass by pid).
+	if d := guardToolCall(safeActor(), "kill_process", map[string]any{"pid": float64(999999991)}); d.Action != ActionHardBlock {
+		t.Errorf("[safe] kill unresolved pid → %s; хотели hard_block", d.Action)
+	}
+	if d := guardToolCall(fullActor(), "kill_process", map[string]any{"pid": float64(999999991)}); d.Action != ActionAsk {
+		t.Errorf("[full] kill unresolved pid → %s; хотели ask", d.Action)
+	}
+}
+
+func TestGuardShellProcessKill(t *testing.T) {
+	critical := []string{
+		`taskkill /F /IM lsass.exe`,
+		`Stop-Process -Name lsass -Force`,
+		`wmic process where name='csrss.exe' delete`,
+	}
+	for _, c := range critical {
+		if d := guardToolCall(safeActor(), "run_command", map[string]any{"command": c}); d.Action != ActionHardBlock {
+			t.Errorf("[safe] %q → %s; хотели hard_block", c, d.Action)
+		}
+		if d := guardToolCall(fullActor(), "run_command", map[string]any{"command": c}); d.Action != ActionAsk {
+			t.Errorf("[full] %q → %s; хотели ask", c, d.Action)
+		}
+	}
+	if d := guardToolCall(safeActor(), "run_command", map[string]any{"command": `taskkill /IM notepad.exe`}); d.Action != ActionAsk {
+		t.Errorf("[safe] taskkill notepad → %s; хотели ask", d.Action)
+	}
+}
+
+func TestGuardOpaqueScriptsAsk(t *testing.T) {
+	cmds := []string{
+		`powershell -File wipe.ps1`,
+		`pwsh -f C:\tmp\x.ps1`,
+		`cmd /c evil.bat`,
+		`.\cleanup.cmd`,
+	}
+	for _, c := range cmds {
+		d := guardToolCall(safeActor(), "run_command", map[string]any{"command": c})
+		if d.Action != ActionAsk || d.Rule != ruleUnparseableCmd {
+			t.Errorf("%q → %s/%s; хотели ask/unparseable_cmd", c, d.Action, d.Rule)
+		}
+	}
 }
 
 // §5: операции с деньгами спрашивают в ЛЮБОМ режиме — рубильник рук про свой ПК, а не про счёт.
@@ -191,6 +238,33 @@ func TestGuardMoneyPolicy(t *testing.T) {
 		if d := guardToolCall(safeActor(), name, nil); d.Action != ActionAllow {
 			t.Errorf("safe: %s → %s; хотели allow", name, d.Action)
 		}
+	}
+}
+
+// Controlled exploit CLIs always ask — even with hands=full (user policy).
+func TestGuardControlledExploitAlwaysAsks(t *testing.T) {
+	cmds := []string{
+		`sqlmap -u https://example.com --batch`,
+		`python D:\tools\sqlmap\sqlmap.py -u https://x`,
+		`hydra -l admin -P rockyou.txt ssh://192.0.2.1`,
+		`hashcat -m 0 hashes.txt wordlist.txt`,
+		`bloodhound --help`,
+	}
+	for _, cmd := range cmds {
+		for _, actor := range []Actor{safeActor(), fullActor()} {
+			d := guardToolCall(actor, "run_command", map[string]any{"command": cmd})
+			if d.Action != ActionAsk || d.Rule != ruleControlledExploit {
+				t.Errorf("[%s] %q → %s/%s; хотели ask/controlled_exploit",
+					actor.Mode, cmd, d.Action, d.Rule)
+			}
+		}
+	}
+	// jwt_tool / nuclei are detect-oriented — not this gate.
+	d := guardToolCall(fullActor(), "run_command", map[string]any{
+		"command": `nuclei -u https://example.com -rate-limit 50`,
+	})
+	if d.Action != ActionAllow {
+		t.Errorf("nuclei in full → %s; хотели allow", d.Action)
 	}
 }
 
@@ -227,6 +301,35 @@ func TestToolFingerprintDistinguishesArgs(t *testing.T) {
 	c := toolFingerprint("delete_path", map[string]any{"path": `d:\TMP\a`})
 	if a != c {
 		t.Fatalf("тот же вызов дал разные отпечатки:\n%s\n%s", a, c)
+	}
+}
+
+func TestToolFingerprintNormalizesURLAndJWT(t *testing.T) {
+	a := toolFingerprint("probe_url", map[string]any{"url": "https://Profi.Sysx.Uz/api/v1/staff/"})
+	b := toolFingerprint("probe_url", map[string]any{"url": "https://profi.sysx.uz/api/v1/staff"})
+	if a != b {
+		t.Fatalf("URL с/без слэша и регистра должны совпадать:\n%s\n%s", a, b)
+	}
+	cmd1 := `Invoke-WebRequest -Uri "https://x/a" -Headers @{Authorization="Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaaaaaaa.bbbbbbbb"}`
+	cmd2 := `Invoke-WebRequest -Uri "https://x/a" -Headers @{Authorization="Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.cccccccc.dddddddd"}`
+	fa := toolFingerprint("run_command", map[string]any{"command": cmd1})
+	fb := toolFingerprint("run_command", map[string]any{"command": cmd2})
+	if fa != fb {
+		t.Fatalf("один скелет команды с разными JWT должен давать один fingerprint:\n%s\n%s", fa, fb)
+	}
+}
+
+func TestToolOKQuota(t *testing.T) {
+	task := newTask(safeActor(), "тест")
+	defer task.Close()
+	for i := 0; i < toolOKQuota; i++ {
+		task.bumpToolOK("probe_url")
+	}
+	if task.toolOKCount("probe_url") < toolOKQuota {
+		t.Fatal("счётчик ToolOK не вырос")
+	}
+	if !toolHasOKQuota("probe_url") || toolHasOKQuota("write_security_report") {
+		t.Fatal("квота должна быть на probe/run_command, не на отчёт")
 	}
 }
 

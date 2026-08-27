@@ -122,20 +122,21 @@ func TestCompactKeepsMessagesArrivedDuringSummary(t *testing.T) {
 	}
 }
 
-// Автосжатие включается САМО на пороге — до того, как скользящее окно начнёт терять реплики.
+// Автосжатие — по заполнению окна (pct), а не по числу реплик.
 func TestAutoCompactFiresAtThreshold(t *testing.T) {
 	chatID := int64(77004)
 	fb := newFakeBrain(t, assistantText("автосводка"))
-	cfg := Config{BrainPort: fb.port}
+	cfg := Config{BrainPort: fb.port, CtxSize: 10000}
 
-	seedHistory(t, chatID, 2) // 4 реплики — далеко до порога
+	seedHistory(t, chatID, 4)                                               // 8 реплик — выше compactMinMessages
+	live.turnDone(GenStats{PromptTokens: 500, GenTokens: 10, GenPerSec: 1}) // 5% окна
 	maybeAutoCompact(cfg, chatID, nil)
 	time.Sleep(150 * time.Millisecond)
 	if fb.requestCount() != 0 {
-		t.Fatalf("ниже порога автосжатие срабатывать не должно (запросов: %d)", fb.requestCount())
+		t.Fatalf("при ~5%% окна автосжатие срабатывать не должно (запросов: %d)", fb.requestCount())
 	}
 
-	seedHistory(t, chatID, autoCompactAt) // с запасом за порог
+	live.turnDone(GenStats{PromptTokens: 7000, GenTokens: 10, GenPerSec: 1}) // 70% ≥ 65%
 	done := make(chan string, 1)
 	maybeAutoCompact(cfg, chatID, func(note string) { done <- note })
 	select {
@@ -144,10 +145,17 @@ func TestAutoCompactFiresAtThreshold(t *testing.T) {
 			t.Errorf("пользователю должно быть сказано, что память изменилась: %q", note)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("автосжатие не сработало на пороге")
+		t.Fatal("автосжатие не сработало на пороге заполнения окна")
 	}
-	if n := len(historyOf(chatID)); n >= autoCompactAt*2 {
-		t.Errorf("история после автосжатия = %d реплик, ожидалось меньше", n)
+}
+
+func TestShouldAutoCompactNearMaxHistory(t *testing.T) {
+	chatID := int64(77006)
+	cfg := Config{CtxSize: 262144}
+	live.turnDone(GenStats{PromptTokens: 100, GenTokens: 1, GenPerSec: 1}) // почти пустое окно
+	seedHistory(t, chatID, (maxHistory-autoCompactNearMax+2)/2)            // пар user+assistant
+	if !shouldAutoCompact(cfg, chatID) {
+		t.Fatalf("у потолка maxHistory=%d автосжатие обязательно, иначе recordHistory молча срежет", maxHistory)
 	}
 }
 

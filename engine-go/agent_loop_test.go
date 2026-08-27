@@ -259,6 +259,37 @@ func TestGateAppliesRegardlessOfRouting(t *testing.T) {
 	}
 }
 
+func TestFinishTaskUsesSecReportWhenModelSilent(t *testing.T) {
+	ls := newTestLoop(t, []string{packSecops})
+	ls.wroteSecReport = true
+	ls.secReportPath = `runtime\browser\security\20260828-test.md`
+	ls.secReportURL = "security/20260828-test.md"
+	ls.plan.Summary = ""
+	res := finishTask(ls, TaskDone, "")
+	if !strings.Contains(res.Text, "MD-отчёт") || !strings.Contains(res.Text, "/api/files/") {
+		t.Fatalf("пустой финал при готовом отчёте: %q", res.Text)
+	}
+	if strings.Contains(res.Text, "не вернула текстовый итог") {
+		t.Fatalf("не должны пугать пустым итогом: %q", res.Text)
+	}
+}
+
+// Identical successful tool calls must not burn the step budget (live pentest looped probe_url).
+func TestSuccessfulCallNotRepeated(t *testing.T) {
+	ls := newTestLoop(t, []string{packSecops})
+	args := map[string]any{"url": "https://example.com/api/v1/staff"}
+	fp := toolFingerprint("probe_url", args)
+	ls.task.bumpSeenOK(fp)
+
+	out := ls.executeGuarded(call("p2", "probe_url", args))
+	if out.result.Status != StatusOK {
+		t.Fatalf("повтор должен вернуть ok-заглушку, получили %s", out.result.Status)
+	}
+	if !strings.Contains(out.result.Text, "пропущен") {
+		t.Fatalf("модель должна увидеть, что повтор пропущен: %q", out.result.Text)
+	}
+}
+
 // Artifacts are drained into the task after EVERY step, not at the end (§6.3 п. 6).
 func TestStepArtifactsGoToTask(t *testing.T) {
 	ls := newTestLoop(t, []string{packFiles})

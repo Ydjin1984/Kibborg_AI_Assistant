@@ -47,7 +47,8 @@ func TestSameOrigin_BlocksCrossSiteAndRebinding(t *testing.T) {
 func TestAgentControlEndpointsAreCSRFGuarded(t *testing.T) {
 	mux := newWebMux(Config{})
 	for _, path := range []string{"/api/hands", "/api/stop", "/api/confirm", "/api/chat", "/api/browser", "/api/compact",
-		"/api/models/download", "/api/models/assign", "/api/models/cancel", "/api/tts", "/api/speak"} {
+		"/api/models/download", "/api/models/assign", "/api/models/cancel", "/api/tts", "/api/speak",
+		"/api/security_audit", "/api/files/x.png"} {
 		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		r.Host = "127.0.0.1:8090"
 		r.Header.Set("Origin", "https://evil.example")

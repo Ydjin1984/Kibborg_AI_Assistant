@@ -90,7 +90,7 @@ Kibborg — это не «ещё один чат с нейросетью». Эт
 | Журнал сделок | `/log`, `/journal`, `/close`, `/size` |
 | Разбор логов и IOC | `/logs`, `/scan`, `/audit` |
 | Память между сессиями | SQLite + опциональные эмбеддинги |
-| Озвучить ответ | кнопка «Озвучить» / `/speak`; тумблер «всегда» = `/tts auto`. SuperTonic на CPU, без GPU |
+| Озвучить ответ | кнопка «Озвучить» / `/speak`; тумблер «всегда» = `/tts auto`. Qwen3-TTS 0.6B на GPU (Serena) |
 | Остановить задачу | `/stop` или кнопка ⏹ — сразу, не через две минуты |
 | Подтвердить опасное | «да» / «нет» в Telegram, кнопки ✅ / 🚫 в вебе |
 
@@ -257,7 +257,7 @@ Task { taskID, канал, 10 минут на задачу }
 | **yt-dlp** | скачивание YouTube / Instagram / TikTok | `pip install -U yt-dlp` |
 | **Python 3.11+** | `huggingface-cli`, `yt-dlp`, опциональный Agent Reach | [python.org](https://www.python.org/downloads/) |
 | **TypeWhisper** | быстрый голос (рекомендуется) | [TypeWhisper для Windows](https://github.com/TypeWhisper/typewhisper-win) |
-| **SuperTonic 3** | озвучка ответов, CPU | `pip install "supertonic[serve]"` |
+| **Qwen3-TTS 0.6B** | озвучка ответов, GPU (Serena, RU/EN) | `engine-go\tts_server\install.cmd` |
 | **whisper.cpp** | запасной голос, если TypeWhisper не запущен | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) |
 | **Telegram-бот** | канал с телефона | [@BotFather](https://t.me/BotFather) |
 
@@ -377,7 +377,7 @@ cd engine-go
 
 ### Шаг 8. Запустить
 
-- `Start.cmd` в корне репозитория (или `engine-go\Start.cmd`) — **одна команда на весь стек**: панель, мозг, SuperTonic. Мозг грузится 1–5 минут или переиспользует уже тёплый `llama-server`.
+- `Start.cmd` в корне репозитория (или `engine-go\Start.cmd`) — **одна команда на весь стек**: панель, мозг, Qwen3-TTS. Мозг грузится 1–5 минут или переиспользует уже тёплый `llama-server`.
 - `Stop.cmd` в корне (или `engine-go\Stop.cmd`) — **одна команда выключить всё**: панель, мозг, озвучку, whisper. TypeWhisper в трее не трогает.
 - `engine-go\Menu.cmd` → **5** старт, **6** стоп.
 
@@ -563,15 +563,16 @@ Invoke-RestMethod http://127.0.0.1:8978/v1/status
 
 Подробности — `engine-go/TYPEWHISPER.md`.
 
-### 5. SuperTonic — озвучка ответов
+### 5. Qwen3-TTS — озвучка ответов
 
 Чтобы бот **говорил**, а не только слушал:
 
 ```powershell
-pip install "supertonic[serve]"
+cd engine-go\tts_server
+.\install.cmd
 ```
 
-Движок сам поднимает `supertonic serve` на `127.0.0.1:7788` (CPU, ~400 МБ весов при первом запуске). В панели — кнопка «Озвучить» под каждым ответом и тумблер «всегда / по запросу». В Telegram: `/tts auto`, `/tts ask`, `/speak`.
+Движок сам поднимает `tts_server\server.py` на `127.0.0.1:7788` (Qwen3-TTS 0.6B CustomVoice на GPU, по умолчанию `TTS_GPU=1` = RTX 3060, голос Serena). Первая загрузка весов ~2 ГБ. В панели — кнопка «Озвучить» и тумблер «всегда / по запросу». В Telegram: `/tts auto`, `/tts ask`, `/speak`.
 
 Режим тумблера живёт в `runtime/tts_mode.json`, не в `settings.ini`.
 

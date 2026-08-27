@@ -31,7 +31,7 @@ const (
 	subtitleTimeout = 180 * time.Second
 )
 
-var reachHTTP = &http.Client{Timeout: reachHTTPTimeout}
+var reachHTTP = safeHTTPClient(reachHTTPTimeout)
 
 // ReadURL fetches a clean Markdown/text rendering of any public URL via Jina Reader
 // (zero API key). Falls back to a plain HTTP GET + light tag strip if Jina fails.
@@ -98,7 +98,9 @@ func maybeChromeText(chrome *Session, pageURL, current string) string {
 }
 
 // HTTPGet performs a raw GET against a public URL (for APIs/JSON). Prefer read_url for articles.
-func HTTPGet(ctx context.Context, rawURL string) (string, error) {
+// authorization is optional (e.g. "Bearer eyJ…") — prefer this over curl in run_command so a
+// long token does not break tool-call JSON escaping.
+func HTTPGet(ctx context.Context, rawURL, authorization string) (string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return "", fmt.Errorf("нужен url")
@@ -110,10 +112,14 @@ func HTTPGet(ctx context.Context, rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	body, status, err := httpGetText(ctx, safe, map[string]string{
+	headers := map[string]string{
 		"User-Agent": searchUA,
 		"Accept":     "application/json, text/plain, */*",
-	})
+	}
+	if auth := strings.TrimSpace(authorization); auth != "" {
+		headers["Authorization"] = auth
+	}
+	body, status, err := httpGetText(ctx, safe, headers)
 	if err != nil {
 		return "", err
 	}

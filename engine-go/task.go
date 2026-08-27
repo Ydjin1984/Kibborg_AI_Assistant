@@ -31,7 +31,11 @@ const (
 
 // TaskTimeout caps a whole task, dispatcher → final answer. Waiting for a confirmation is NOT
 // counted against it (pending has its own 5 minutes, §6.3).
-const TaskTimeout = 10 * time.Minute
+//
+// Security audits and multi-tool agent runs routinely exceed 10 minutes (nuclei, crawls,
+// confirmations). Context is compacted when full — the job must finish, not die on a clock.
+// /stop remains the hard abort. 24h is a safety net against runaway loops, not a UX limit.
+const TaskTimeout = 24 * time.Hour
 
 // Channel names used in Actor / journals.
 const (
@@ -78,6 +82,12 @@ type Task struct {
 	FailCount map[string]int
 	// ToolFail is keyed by tool name: a tool that never works at all should end the loop.
 	ToolFail map[string]int
+	// SeenOK — успешные вызовы по fingerprint. Без этого модель крутит один и тот же
+	// probe_url до исчерпания step budget, а summarize() получает обрезанный мусор.
+	SeenOK map[string]int
+	// ToolOK — сколько раз tool-имя успешно отработало в этой задаче (даже с разными args).
+	// Живой пентест: 59× probe_url / 10× run_command — квота режет спам по семейству.
+	ToolOK map[string]int
 
 	Pending     *Pending
 	Deadline    time.Time
@@ -112,6 +122,8 @@ type Task struct {
 const (
 	fingerprintFailLimit = 2
 	toolFailLimit        = 4
+	// toolOKQuota — мягкий потолок УСПЕШНЫХ вызовов одного имени за задачу (пентест-спам).
+	toolOKQuota = 4
 )
 
 var taskSeq atomic.Uint64
@@ -151,6 +163,8 @@ func newTask(actor Actor, input string) *Task {
 		Status:    TaskRunning,
 		FailCount: map[string]int{},
 		ToolFail:  map[string]int{},
+		SeenOK:    map[string]int{},
+		ToolOK:    map[string]int{},
 		Deadline:  time.Now().Add(TaskTimeout),
 		Cancel:    cancel,
 		ctx:       ctx,
@@ -164,6 +178,33 @@ func (t *Task) Context() context.Context {
 		return context.Background()
 	}
 	return t.ctx
+}
+
+// armWaitContext replaces the work deadline with a cancel-only context while parked on a
+// human confirmation. Waiting must not burn TaskTimeout (§6.3 / pending.go).
+func (t *Task) armWaitContext() {
+	if t == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.mu.Lock()
+	t.ctx = ctx
+	t.Cancel = cancel
+	t.Deadline = time.Now().Add(pendingTimeout)
+	t.mu.Unlock()
+}
+
+// armWorkContext starts a fresh TaskTimeout budget after the user answers a confirmation.
+func (t *Task) armWorkContext() {
+	if t == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), TaskTimeout)
+	t.mu.Lock()
+	t.ctx = ctx
+	t.Cancel = cancel
+	t.Deadline = time.Now().Add(TaskTimeout)
+	t.mu.Unlock()
 }
 
 // SetStatus records an intermediate or terminal state under the lock.
@@ -182,13 +223,26 @@ func (t *Task) GetStatus() TaskStatus {
 
 // AddArtifacts drains the session buffer into THIS task after every step (§6.3 п. 6): with a
 // pending confirmation in flight, a neighbouring task must never collect our files.
+// Дубликаты отбрасываем: download_url/write_security_report раньше клали путь и в
+// okResult.Artifacts, и через t.AddArtifacts — в панели один файл светился дважды.
 func (t *Task) AddArtifacts(paths []string) {
 	if len(paths) == 0 {
 		return
 	}
 	t.mu.Lock()
-	t.Artifacts = append(t.Artifacts, paths...)
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	seen := make(map[string]bool, len(t.Artifacts)+len(paths))
+	for _, p := range t.Artifacts {
+		seen[p] = true
+	}
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		t.Artifacts = append(t.Artifacts, p)
+	}
 }
 
 // TakeArtifacts returns and clears the task's own artifacts.
@@ -236,7 +290,7 @@ func (t *Task) noteFailedAction(tool, reason string) {
 	if len(t.FailedActions) >= 6 {
 		return
 	}
-	t.FailedActions = append(t.FailedActions, tool+": "+capAgentText(reason, 160))
+	t.FailedActions = append(t.FailedActions, tool+": "+scrubSecrets(capAgentText(reason, 160)))
 }
 
 // failedActionsNotice is the line the human sees when the answer claims more than happened.
@@ -257,6 +311,69 @@ func (t *Task) bumpFail(fingerprint, tool string) (repeated bool, deadTool bool)
 	t.FailCount[fingerprint]++
 	t.ToolFail[tool]++
 	return t.FailCount[fingerprint] >= fingerprintFailLimit, t.ToolFail[tool] >= toolFailLimit
+}
+
+// seenOKCount returns how many times this exact call already succeeded in the task.
+func (t *Task) seenOKCount(fingerprint string) int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.SeenOK == nil {
+		return 0
+	}
+	return t.SeenOK[fingerprint]
+}
+
+// bumpSeenOK records a successful call; returns the new count.
+func (t *Task) bumpSeenOK(fingerprint string) int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.SeenOK == nil {
+		t.SeenOK = map[string]int{}
+	}
+	t.SeenOK[fingerprint]++
+	return t.SeenOK[fingerprint]
+}
+
+func (t *Task) toolOKCount(name string) int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ToolOK == nil {
+		return 0
+	}
+	return t.ToolOK[name]
+}
+
+func (t *Task) bumpToolOK(name string) int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ToolOK == nil {
+		t.ToolOK = map[string]int{}
+	}
+	t.ToolOK[name]++
+	return t.ToolOK[name]
+}
+
+// toolHasOKQuota — семейства, которые на живых прогонах уходили в спам.
+func toolHasOKQuota(name string) bool {
+	switch name {
+	case "probe_url", "http_get", "read_url", "download_url",
+		"run_command", "list_dir", "web_search", "semantic_search":
+		return true
+	default:
+		return false
+	}
 }
 
 // Close cancels the task context. Safe to call twice.

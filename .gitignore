@@ -4,6 +4,22 @@
 
 # Секреты — реальный settings.ini с TELEGRAM_TOKEN (шаблон settings.ini.example коммитится)
 **/settings.ini
+engine-go/TOKEN.txt
+engine-go/login_resp.json
+engine-go/settings.ini.bak*
+
+# Локальные дампы API/пентеста (PII) — не в git
+engine-go/staff.json
+engine-go/students.json
+engine-go/roles.json
+engine-go/branches.json
+engine-go/charges.json
+engine-go/courses.json
+engine-go/enrollments.json
+engine-go/giftcards.json
+engine-go/groups.json
+engine-go/notifications.json
+engine-go/payments.json
 
 # Собранные бинарники
 **/*.exe
@@ -16,6 +32,9 @@
 
 # Локальные модели (GGUF весят десятки ГБ)
 **/models/
+
+# TTS venv (torch+qwen-tts); веса кэшируются в HF_HOME
+engine-go/tts_server/.venv/
 
 # Мусор ОС и бэкапы бинарника
 Thumbs.db
@@ -36,3 +55,13 @@ engine-go/find_strategies.go
 engine-go/find_strategies.bat
 engine-go/run_find.bat
 .element-picks/
+
+# Graphify: local cost meter only; commit graph.json / GRAPH_REPORT.md / graph.html
+graphify-out/cost.json
+
+# Тяжёлые клоны словарей/шаблонов/CLI для кибербезопасности (ставим локально)
+engine-go/hacker-tools/SecLists/
+engine-go/hacker-tools/nuclei-templates/
+engine-go/hacker-tools/PayloadsAllTheThings/
+engine-go/hacker-tools/sqlmap/
+engine-go/hacker-tools/jwt_tool/

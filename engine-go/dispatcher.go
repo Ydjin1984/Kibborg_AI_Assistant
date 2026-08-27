@@ -60,6 +60,7 @@ func dispatcherSystemPrompt() string {
 - уровни, ATR, стоп, тейк, точка входа, ложный пробой, «по Герчику», «можно ли входить» → trade
   (это разбор инструмента по свечам, а НЕ новости: цифры даёт analyze_ticker)
 - логи бота, IOC, аудит файла → secops
+- тест на прочность сайта, проверка на дыры, пентест своего URL, security headers, MD-отчёт по уязвимостям → secops (+ web/files по необходимости)
 - скриншот экрана/рабочего стола, «что у меня открыто», окна, мышь, клавиатура, «нажми», «запусти программу», буфер обмена → system
 - во входе есть блок «[Разбор приложенного …]» — вложение УЖЕ превращено в текст до тебя.
   Ответ на вопрос виден прямо в этом тексте → chat. Инструменты нужны, только если нужного
@@ -79,6 +80,7 @@ func dispatcherSystemPrompt() string {
 - «что у меня сейчас открыто» → {"packs":["system"],...}
 - «открой блокнот и напиши туда текст» → {"packs":["system"],...}
 - «какая сумма в акте» + [Разбор приложенного документа] → {"packs":["chat"],...} (текст уже перед тобой)
+- «проверь сайт на дыры https://…» / «тест на прочность» → {"packs":["secops","web","files"],...}
 
 Поля:
 - packs — массив имён из списка выше (1–3 штуки, лишнего не бери)
@@ -96,16 +98,20 @@ func runDispatcher(cfg Config, t *Task, history []map[string]any, memSummary str
 	start := time.Now()
 	defer func() { t.DispatcherMs = time.Since(start).Milliseconds() }()
 
-	msgs := []map[string]any{{"role": "system", "content": dispatcherSystemPrompt()}}
+	// Один system первым: шаблон Qwen3 падает на втором («System message must be at the beginning»).
+	sys := dispatcherSystemPrompt()
 	if ctxBlock := dispatcherContext(t.ChatID, history, memSummary); ctxBlock != "" {
-		msgs = append(msgs, map[string]any{"role": "system", "content": ctxBlock})
+		sys += "\n\n" + ctxBlock
 	}
 	userMsg := capAgentText(t.Input, 1500)
 	if len(hintPacks) > 0 {
 		userMsg += "\n\n(Пользователь пришёл через команду, скорее всего нужен пак: " +
 			strings.Join(hintPacks, ", ") + ". Это подсказка — решай сам.)"
 	}
-	msgs = append(msgs, map[string]any{"role": "user", "content": userMsg})
+	msgs := []map[string]any{
+		{"role": "system", "content": sys},
+		{"role": "user", "content": userMsg},
+	}
 
 	var lastRaw string
 	for attempt := 0; attempt < 2; attempt++ {
@@ -293,11 +299,44 @@ func fallbackPlan(input string, hintPacks []string) dispatchPlan {
 			Summary: "отвечу словами",
 		}
 	}
+	if looksLikeStressAudit(lower) {
+		packs := []string{packSecops, packWeb, packFiles}
+		plan := []string{"probe_url", "чеклист плейбука", "MD-отчёт"}
+		if strings.Contains(lower, "light") || strings.Contains(lower, "лайт") ||
+			strings.Contains(lower, "лёгк") || strings.Contains(lower, "легк") {
+			packs = []string{packSecops}
+			plan = []string{"probe_url", "MD-отчёт"}
+		} else if strings.Contains(lower, "full") || strings.Contains(lower, "полн") ||
+			strings.Contains(lower, "режим: full") || strings.Contains(lower, "режим глубины: full") {
+			packs = []string{packSecops, packWeb, packConsole}
+			plan = []string{"probe_url", "каталог + браузер", "CLI из PATH", "MD-отчёт"}
+		}
+		return dispatchPlan{
+			Packs: packs, Confirm: false,
+			Summary: "проведу тест на прочность",
+			Plan:    plan,
+		}
+	}
 	return dispatchPlan{
 		Packs: []string{packWeb}, Confirm: false,
 		Summary: "поищу и прочитаю источники",
 		Plan:    []string{"web_search по запросу", "read_url на лучшие результаты", "ответ со ссылками"},
 	}
+}
+
+// looksLikeStressAudit ловит «проверь на дыры», «тест на прочность», «пентест сайта».
+func looksLikeStressAudit(lower string) bool {
+	keys := []string{
+		"тест на прочность", "на прочность", "проверь на дыры", "проверка на дыры",
+		"пентест", "pentest", "websec", "security audit", "аудит безопасност",
+		"уязвим", "security headers", "хакер тул", "hacker tools",
+	}
+	for _, k := range keys {
+		if strings.Contains(lower, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // mentionsMediaFile ловит путь к видео/аудио в тексте («разбери D:\лекция.mp4»). Нужен только

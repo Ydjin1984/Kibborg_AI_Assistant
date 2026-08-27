@@ -72,7 +72,7 @@ func handleAPIHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"messages": msgs,
-		"context":  contextSnapshot(webCfg, webChatID),
+		"context":  contextSnapshot(curWebCfg(), webChatID),
 		"pending":  pendingJSON(webChatID),
 	})
 }
@@ -93,6 +93,7 @@ func pendingJSON(chatID int64) map[string]any {
 	}
 	left := max(int(time.Until(p.Deadline).Seconds()), 0)
 	return map[string]any{
+		"id":         p.ID,
 		"tool":       p.Tool,
 		"args":       args,
 		"rule":       p.Rule,

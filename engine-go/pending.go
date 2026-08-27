@@ -48,15 +48,16 @@ type Pending struct {
 // Deliberately not serialized (§11: "сериализация полного msgs на диск" is out of scope) —
 // after a process restart the honest answer is «задача потерялась, повтори» (§6.3 п. 10).
 type resumeState struct {
-	task    *Task
-	cfg     Config
-	pending *Pending
-	msgs    []map[string]any // compacted history INCLUDING the assistant tool_calls message
-	sys     string
-	packs   []string
-	tools   []browser.ToolSpec
-	didRead bool
-	didSrch bool
+	task     *Task
+	cfg      Config
+	pending  *Pending
+	msgs     []map[string]any // compacted history INCLUDING the assistant tool_calls message
+	sys      string
+	packs    []string
+	tools    []browser.ToolSpec
+	didRead  bool
+	didSrch  bool
+	usedTool bool
 }
 
 var (
@@ -93,6 +94,25 @@ func takePending(chatID int64) *resumeState {
 	if rs != nil {
 		clearPersistedPending(rs.pending.ChatID)
 	}
+	return rs
+}
+
+// takePendingMatching removes the paused task only when pendingID is empty (Telegram «да»)
+// or equals the stored Pending.ID (Web button must bind to the question it rendered).
+func takePendingMatching(chatID int64, pendingID string) *resumeState {
+	pendingID = strings.TrimSpace(pendingID)
+	if pendingID == "" {
+		return takePending(chatID)
+	}
+	pendingMu.Lock()
+	rs := pendingByID[chatID]
+	if rs == nil || rs.pending == nil || rs.pending.ID != pendingID {
+		pendingMu.Unlock()
+		return nil
+	}
+	delete(pendingByID, chatID)
+	pendingMu.Unlock()
+	clearPersistedPending(rs.pending.ChatID)
 	return rs
 }
 

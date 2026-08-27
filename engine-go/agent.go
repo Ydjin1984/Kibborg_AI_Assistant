@@ -67,16 +67,46 @@ func agentSystemPrompt() string {
 
 const (
 	maxAgentSteps = 12
+	// Secops /stress burns probe + catalog + evidence downloads + MD report; 12 steps
+	// ended live runs with artifacts=0 and no write_security_report.
+	maxSecopsAgentSteps = 20
 	// Keep agent prompts inside a 32k context: chat templates expand tool schemas heavily.
-	agentMaxHistMsgs  = 6    // last N user/assistant turns (excl. system)
-	agentMaxMsgChars  = 3500 // per history/memory message
-	agentMaxToolChars = 6000 // per tool result fed back to the model
-	agentMaxMemBlocks = 1    // at most one memory system block
-	agentMaxMemChars  = 1500
-	// Soft budget for the whole tool-loop prompt (chars). Leave headroom for generation
-	// and chat-template tool expansion under LLAMA_CTX_SIZE=32768.
-	agentSoftBudgetChars = 48_000
+	agentMaxHistMsgs  = 10    // last N user/assistant turns (excl. system)
+	agentMaxMsgChars  = 6000  // per history/memory message
+	agentMaxToolChars = 12000 // per tool result fed back to the model
+	agentMaxMemBlocks = 1     // at most one memory system block
+	agentMaxMemChars  = 2500
+	// agentSoftBudgetFloor — минимум soft-бюджета (chars). Раньше потолок был зашит
+	// под LLAMA_CTX_SIZE=32768 (=48k), и на 256K summarize() выбрасывал ВСЕ tool-результаты,
+	// подсовывая модели «если данных мало — скажи честно» — отсюда пустые ответы после
+	// длинного пентеста.
+	agentSoftBudgetFloor = 48_000
 )
+
+// agentSoftBudget scales the tool-loop char budget with the real context window.
+func agentSoftBudget(cfg Config) int {
+	ctx := brainCtxSize(cfg)
+	if ctx <= 0 {
+		ctx = 32768
+	}
+	// ~2.5 chars/token for RU; take ~40% of the window for messages (schemas/gen aside).
+	n := ctx * 25 / 10 * 40 / 100
+	if n < agentSoftBudgetFloor {
+		return agentSoftBudgetFloor
+	}
+	if n > 600_000 {
+		return 600_000
+	}
+	return n
+}
+
+// stepBudget returns how many executor turns this task may burn.
+func stepBudget(packs []string) int {
+	if hasPack(packs, packSecops) {
+		return maxSecopsAgentSteps
+	}
+	return maxAgentSteps
+}
 
 var (
 	browserMu      sync.Mutex
@@ -122,7 +152,7 @@ func closeBrowserSession() {
 
 // runAgent is THE entry point for both channels: text or voice, slash or free chat, all go
 // through the dispatcher (§4). Slash commands are hints, not a bypass.
-func runAgent(cfg Config, actor Actor, baseMsgs []map[string]any, task string, status func(string)) agentResult {
+func runAgent(cfg Config, actor Actor, baseMsgs []map[string]any, task string, status StatusFn) agentResult {
 	return runLayeredAgent(agentRequest{
 		cfg:        cfg,
 		actor:      actor,
@@ -195,7 +225,7 @@ func slimForSummary(msgs []map[string]any, sys string) []map[string]any {
 		role, _ := m["role"].(string)
 		switch role {
 		case "tool":
-			c := capAgentText(msgContentString(m["content"]), 1500)
+			c := capAgentText(msgContentString(m["content"]), 4000)
 			picked = append(picked, map[string]any{
 				"role":         "tool",
 				"tool_call_id": m["tool_call_id"],
@@ -207,19 +237,19 @@ func slimForSummary(msgs []map[string]any, sys string) []map[string]any {
 			if _, has := m["tool_calls"]; has {
 				continue
 			}
-			c := capAgentText(msgContentString(m["content"]), 800)
+			c := capAgentText(msgContentString(m["content"]), 1200)
 			if c != "" {
 				picked = append(picked, map[string]any{"role": "assistant", "content": c})
 			}
 		case "user":
-			c := capAgentText(msgContentString(m["content"]), 500)
+			c := capAgentText(msgContentString(m["content"]), 1500)
 			if c != "" {
 				picked = append(picked, map[string]any{"role": "user", "content": c})
 			}
 		}
 	}
-	if len(picked) > 8 {
-		picked = picked[len(picked)-8:]
+	if len(picked) > 16 {
+		picked = picked[len(picked)-16:]
 	}
 	// Summary without tools: convert tool roles to plain user notes (cleaner for no-tools call).
 	for _, m := range picked {
@@ -253,28 +283,31 @@ func estimateAgentChars(msgs []map[string]any, tools any) int {
 	return n
 }
 
-// packAgentMessages builds a tight message list: live agent system + optional 1 memory block
+// packAgentMessages builds a tight message list: live agent system (+ memory merged into it)
 // + last few history turns (capped) + current user task. Drops the default chat system prompt.
+//
+// Memory used to be a SECOND role=system message. Qwen3's Jinja template forbids that
+// («System message must be at the beginning» on any system that is not messages[0]) — so
+// memory is folded into the single leading system block.
 func packAgentMessages(base []map[string]any, sys, task string) []map[string]any {
-	out := make([]map[string]any, 0, 12)
-	out = append(out, map[string]any{"role": "system", "content": sys})
+	sysParts := []string{strings.TrimSpace(sys)}
+	var hist []map[string]any
 
 	if len(base) > 1 {
-		var mem []map[string]any
-		var hist []map[string]any
+		memKept := 0
 		for _, m := range base[1:] {
 			role, _ := m["role"].(string)
 			content := msgContentString(m["content"])
 			if role == "system" {
-				// Memory / injected system blocks — keep at most one, capped.
-				if len(mem) >= agentMaxMemBlocks {
+				if memKept >= agentMaxMemBlocks {
 					continue
 				}
 				content = capAgentText(content, agentMaxMemChars)
 				if content == "" {
 					continue
 				}
-				mem = append(mem, map[string]any{"role": "system", "content": content})
+				sysParts = append(sysParts, content)
+				memKept++
 				continue
 			}
 			if role != "user" && role != "assistant" {
@@ -286,13 +319,14 @@ func packAgentMessages(base []map[string]any, sys, task string) []map[string]any
 			}
 			hist = append(hist, map[string]any{"role": role, "content": content})
 		}
-		out = append(out, mem...)
 		if len(hist) > agentMaxHistMsgs {
 			hist = hist[len(hist)-agentMaxHistMsgs:]
 		}
-		out = append(out, hist...)
 	}
 
+	out := make([]map[string]any, 0, 2+len(hist))
+	out = append(out, map[string]any{"role": "system", "content": strings.Join(sysParts, "\n\n")})
+	out = append(out, hist...)
 	if strings.TrimSpace(task) != "" {
 		out = append(out, map[string]any{"role": "user", "content": strings.TrimSpace(task)})
 	}
@@ -344,19 +378,21 @@ func isContextBad(err error) bool {
 
 // compactToolMessages shrinks older tool results, keeping the latest few intact.
 func compactToolMessages(msgs []map[string]any) []map[string]any {
-	// Count tool messages from the end; shrink all but the last 4 tool payloads.
+	// Keep last N tool payloads intact; older ones are trimmed (not deleted).
+	const keepRecent = 8
+	const oldCap = 1500
 	toolIdxs := make([]int, 0, 8)
 	for i, m := range msgs {
 		if role, _ := m["role"].(string); role == "tool" {
 			toolIdxs = append(toolIdxs, i)
 		}
 	}
-	if len(toolIdxs) <= 4 {
+	if len(toolIdxs) <= keepRecent {
 		return msgs
 	}
-	for _, i := range toolIdxs[:len(toolIdxs)-4] {
-		if c, ok := msgs[i]["content"].(string); ok && len(c) > 400 {
-			msgs[i]["content"] = capAgentText(c, 400)
+	for _, i := range toolIdxs[:len(toolIdxs)-keepRecent] {
+		if c, ok := msgs[i]["content"].(string); ok && len(c) > oldCap {
+			msgs[i]["content"] = capAgentText(c, oldCap)
 		}
 	}
 	return msgs

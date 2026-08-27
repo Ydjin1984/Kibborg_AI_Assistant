@@ -19,7 +19,7 @@ echo 2. Изменить глобальные настройки (путь к м
 echo 3. Показать текущие настройки
 echo 4. Собрать Go-бинарник
 echo 5. Запустить всё (панель + мозг + озвучка; тёплый мозг не перезагружает)
-echo 6. Остановить всё (панель + мозг + SuperTonic + whisper)
+echo 6. Остановить всё (панель + мозг + Qwen3-TTS + whisper)
 echo 7. Запустить Chrome с отладкой (порт 9222) — для команды /browser
 echo 0. Выход
 echo/
@@ -73,12 +73,15 @@ PORT_BRAIN=8083
 PORT_ENGINE=8002
 
 # === ПАРАМЕТРЫ LLAMA-SERVER (подбери под железо) ===
-LLAMA_THREADS=28
-LLAMA_CTX_SIZE=32768
+LLAMA_THREADS=0
+LLAMA_CTX_SIZE=262144
 LLAMA_GPU_LAYERS=99
-# Qwen 35B на две 3060:
+# Qwen 35B на две 3060, KV 256K в RAM:
 LLAMA_TENSOR_SPLIT=0.35,0.65
 LLAMA_MAIN_GPU=0
+LLAMA_CACHE_TYPE_K=q8_0
+LLAMA_CACHE_TYPE_V=q8_0
+LLAMA_NO_KV_OFFLOAD=true
 "@ | Out-File -FilePath settings.ini -Encoding UTF8
 
 :EditSettings

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,18 +19,24 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
 
 const (
-	settingsINIPath = "settings.ini"
-	modelsBrainDir  = "models/brain"
 	hfAPIDefault    = "https://huggingface.co"
 	catalogTTL      = 8 * time.Minute
 	hfSearchLimit   = 36
 	hfExpandWorkers = 6
 )
+
+// settingsINIPath — куда assignBrainModel пишет выбранную модель. var, чтобы
+// тесты подменяли на temp (та же схема, что у modelsBrainDir).
+var settingsINIPath = "settings.ini"
+
+// modelsBrainDir — каталог локальных GGUF. var, чтобы тесты подменяли на temp.
+var modelsBrainDir = "models/brain"
 
 var hfHTTP = &http.Client{Timeout: 28 * time.Second}
 var hfDownloadHTTP = &http.Client{Timeout: 0} // большой файл; отмена через context
@@ -37,7 +44,19 @@ var hfBase = hfAPIDefault
 
 // liveBrainModel — файл, который llama-server реально держит в VRAM. После assign
 // settings.ini уже другой, а процесс мозга — старый, пока не перезапустят стек.
-var liveBrainModel string
+// Пишется из старта и горутины переключения, читается из HTTP/Telegram-хендлеров —
+// доступ через atomic, чтобы не было data race.
+var liveBrainModel atomic.Value // string
+
+func setLiveBrainModel(name string) { liveBrainModel.Store(name) }
+
+func liveBrainModelNow() string {
+	if v := liveBrainModel.Load(); v != nil {
+		s, _ := v.(string)
+		return s
+	}
+	return ""
+}
 
 // HubModel — одна карточка репозитория (семейство + кванты).
 type HubModel struct {
@@ -401,6 +420,7 @@ func inferCaps(m *HubModel) {
 		strings.Contains(blob, "llava") || strings.Contains(blob, "vision") ||
 		strings.Contains(blob, "qwen2-vl") || strings.Contains(blob, "qwen2.5-vl") ||
 		strings.Contains(blob, "qwen3-vl") || strings.Contains(blob, "qwen3.6") ||
+		strings.Contains(blob, "qwen3.8") ||
 		strings.Contains(blob, "gemma-3") || strings.Contains(blob, "internvl") ||
 		strings.Contains(blob, "pixtral") || strings.Contains(blob, "minicpm-v") ||
 		strings.Contains(blob, "multimodal") {
@@ -419,7 +439,8 @@ func inferCaps(m *HubModel) {
 	if strings.Contains(blob, "reasoning") || strings.Contains(blob, "thinking") ||
 		strings.Contains(blob, "deepseek-r1") || strings.Contains(blob, "qwq") ||
 		regexp.MustCompile(`(^|[^a-z])r1([^a-z]|$)`).MatchString(blob) ||
-		strings.Contains(blob, "qwen3") || strings.Contains(blob, "qwen3.6") {
+		strings.Contains(blob, "qwen3") || strings.Contains(blob, "qwen3.6") ||
+		strings.Contains(blob, "qwen3.8") {
 		m.Reasoning = true
 	}
 }
@@ -509,7 +530,7 @@ func listLocalModels(hw HardwareReport) []HubModel {
 type assignedPaths struct{ model, mmproj string }
 
 func currentAssignedPaths() assignedPaths {
-	cfg := webCfg
+	cfg := curWebCfg()
 	return assignedPaths{model: cfg.ModelPath, mmproj: cfg.MmprojPath}
 }
 
@@ -552,7 +573,10 @@ type modelDownload struct {
 	Err      string `json:"error,omitempty"`
 	Assigned bool   `json:"assigned"`
 	Mmproj   string `json:"mmproj,omitempty"`
-	cancel   context.CancelFunc
+	// SwitchErr — файл скачан и прописан, но автопереключение мозга не стартовало
+	// (например, уже идёт другое). Показываем честно, а не «переключаю мозг» впустую.
+	SwitchErr string `json:"switch_error,omitempty"`
+	cancel    context.CancelFunc
 }
 
 var currentDL = &modelDownload{Status: "idle"}
@@ -569,6 +593,7 @@ func downloadSnapshot() map[string]any {
 		"total": currentDL.Total, "done": currentDL.Done, "pct": round1(pct),
 		"status": currentDL.Status, "error": currentDL.Err,
 		"assigned": currentDL.Assigned, "mmproj": currentDL.Mmproj,
+		"switch_error": currentDL.SwitchErr,
 	}
 }
 
@@ -591,6 +616,7 @@ func startModelDownload(repo, file string, assign, withMMProj bool) error {
 	currentDL.Dest, currentDL.Total, currentDL.Done = "", 0, 0
 	currentDL.Status, currentDL.Err, currentDL.Assigned = "running", "", false
 	currentDL.Mmproj = ""
+	currentDL.SwitchErr = ""
 	currentDL.cancel = cancel
 	currentDL.mu.Unlock()
 
@@ -648,6 +674,15 @@ func runModelDownload(ctx context.Context, repo, file string, assign, withMMProj
 		currentDL.mu.Lock()
 		currentDL.Assigned = true
 		currentDL.mu.Unlock()
+		// Скачали и прописали — поднимаем в VRAM, не требуя ручного Stop→Start.
+		// Неудачу (например, уже идёт другое переключение) НЕ проглатываем: пишем
+		// в SwitchErr, и панель/`/models` честно покажут, что мозг не переключён.
+		if err := startBrainSwitch(); err != nil {
+			log.Printf("[MODELS] скачано, автопереключение: %v", err)
+			currentDL.mu.Lock()
+			currentDL.SwitchErr = err.Error()
+			currentDL.mu.Unlock()
+		}
 	}
 	return nil
 }
@@ -763,9 +798,15 @@ func assignBrainModel(modelPath, mmprojPath string) error {
 	if err != nil {
 		return err
 	}
+	if !strings.EqualFold(filepath.Ext(abs), ".gguf") {
+		return fmt.Errorf("модель должна быть .gguf: %s", modelPath)
+	}
 	if _, err := os.Stat(abs); err != nil {
 		return fmt.Errorf("файла нет: %s", modelPath)
 	}
+	// mmproj строго привязан к архитектуре модели: если его нет (не передали и рядом
+	// не лежит) — ОБЯЗАТЕЛЬНО чистим MMPROJ_PATH в ini и webCfg. Иначе после переключения
+	// в settings.ini останется mmproj от старой модели и llama-server не поднимется.
 	if mmprojPath == "" {
 		if auto := autoDetectMmproj(abs); auto != "" {
 			mmprojPath = auto
@@ -774,21 +815,30 @@ func assignBrainModel(modelPath, mmprojPath string) error {
 	relModel := relativizeForINI(abs)
 	relMM := ""
 	if mmprojPath != "" {
-		if a, e := filepath.Abs(mmprojPath); e == nil {
-			relMM = relativizeForINI(a)
+		am, e := filepath.Abs(mmprojPath)
+		if e != nil {
+			return fmt.Errorf("mmproj путь не разбирается: %s", mmprojPath)
 		}
+		if !strings.EqualFold(filepath.Ext(am), ".gguf") {
+			return fmt.Errorf("mmproj должна быть .gguf: %s", mmprojPath)
+		}
+		if _, e := os.Stat(am); e != nil {
+			return fmt.Errorf("mmproj файла нет: %s", mmprojPath)
+		}
+		relMM = relativizeForINI(am)
 	}
-	updates := map[string]string{"MODEL_PATH": relModel}
-	if relMM != "" {
-		updates["MMPROJ_PATH"] = relMM
-	}
+	updates := map[string]string{"MODEL_PATH": relModel, "MMPROJ_PATH": relMM}
 	if err := patchSettingsINI(settingsINIPath, updates); err != nil {
 		return err
 	}
+	webCfgMu.Lock()
 	webCfg.ModelPath = abs
 	if relMM != "" {
 		webCfg.MmprojPath, _ = filepath.Abs(mmprojPath)
+	} else {
+		webCfg.MmprojPath = ""
 	}
+	webCfgMu.Unlock()
 	return nil
 }
 
@@ -861,11 +911,30 @@ func handleModelsCommand(arg string) string {
 		if err := startModelDownload(repo, file, true, true); err != nil {
 			return "❌ " + err.Error()
 		}
-		return "⬇ Качаю `" + file + "` в `models/brain/` и пропишу в settings.ini.\n" +
-			"Мозг в VRAM не трогаю — после скачивания Stop → Start.\nПрогресс: вкладка **Модели**."
+		return "⬇ Качаю `" + file + "` в `models/brain/`.\n" +
+			"После скачивания пропишу в settings.ini и перезапущу мозг.\n" +
+			"Прогресс: правая колонка панели и `/models`."
 	}
-	if len(fields) == 1 && (strings.EqualFold(fields[0], "local") || fields[0] == "диск") {
-		return formatLocalModels(listLocalModels(hw))
+	if len(fields) >= 1 && (strings.EqualFold(fields[0], "use") || strings.EqualFold(fields[0], "switch") ||
+		strings.EqualFold(fields[0], "назначить") || strings.EqualFold(fields[0], "включить")) {
+		if len(fields) < 2 {
+			return "📦 Укажи файл: `/models use Qwen3.8-27B-Q4_K_M.gguf`"
+		}
+		path, mm, err := findLocalWeight(strings.Join(fields[1:], " "))
+		if err != nil {
+			return "❌ " + err.Error()
+		}
+		if err := assignBrainModel(path, mm); err != nil {
+			return "❌ " + err.Error()
+		}
+		if err := startBrainSwitch(); err != nil {
+			return "📌 Прописал `" + filepath.Base(path) + "` в settings.ini.\n" + err.Error()
+		}
+		return "🔄 Переключаю мозг на `" + filepath.Base(path) + "`. Это 1–5 минут, чат подождёт."
+	}
+	if len(fields) == 0 || (len(fields) == 1 && (strings.EqualFold(fields[0], "local") || fields[0] == "диск" ||
+		strings.EqualFold(fields[0], "status") || fields[0] == "статус")) {
+		return formatModelsStatus(hw)
 	}
 	fit := ""
 	vision, tools, reasoning := false, false, false
@@ -977,4 +1046,60 @@ func formatLocalModels(models []HubModel) string {
 		}
 	}
 	return b.String()
+}
+
+func formatModelsStatus(hw HardwareReport) string {
+	var b strings.Builder
+	run := liveBrainModelNow()
+	if run == "" {
+		run = "—"
+	}
+	asg := filepathBase(curWebCfg().ModelPath)
+	fmt.Fprintf(&b, "🧠 **Сейчас в VRAM:** `%s`\n", run)
+	if asg != "" && asg != run {
+		fmt.Fprintf(&b, "📌 В settings.ini: `%s` (ещё не поднята)\n", asg)
+	}
+	sw := switchSnapshot()
+	if st, _ := sw["status"].(string); st == "stopping" || st == "starting" {
+		fmt.Fprintf(&b, "🔄 Переключаю → `%s` (%s)\n", sw["to"], st)
+	} else if st == "error" {
+		fmt.Fprintf(&b, "❌ Переключение: %s\n", sw["error"])
+	}
+	dl := downloadSnapshot()
+	if st, _ := dl["status"].(string); st == "running" {
+		fmt.Fprintf(&b, "⬇ Скачиваю `%s` · %.0f%% (%s / %s)\n",
+			dl["file"], asFloat(dl["pct"]),
+			fmtGBMaybe(dl["done"]), fmtGBMaybe(dl["total"]))
+	} else if st == "error" {
+		fmt.Fprintf(&b, "❌ Скачивание: %s\n", dl["error"])
+	} else if st == "done" {
+		if se, _ := dl["switch_error"].(string); se != "" {
+			fmt.Fprintf(&b, "⚠️ Скачано, но мозг не переключён: %s\n", se)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(formatLocalModels(listLocalModels(hw)))
+	b.WriteString("\nПереключить: `/models use <файл.gguf>`\nСкачать: `/models get owner/repo файл.gguf`")
+	return b.String()
+}
+
+func asFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
+	}
+}
+
+func fmtGBMaybe(v any) string {
+	n := asFloat(v)
+	if n <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f ГБ", n/(1024*1024*1024))
 }

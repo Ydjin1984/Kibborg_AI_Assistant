@@ -62,6 +62,12 @@
   .gbtn:hover{border-color:var(--edge2);color:var(--text)}
   .gbtn.on{color:var(--sand);border-color:rgba(216,179,122,.34);background:rgba(216,179,122,.07)}
   .gbtn:disabled{opacity:.45;cursor:default}
+  /* Глобальный стоп в шапке: виден с любой вкладки. .live — пока задача крутится. */
+  .gbtn.stop{color:var(--dim)}
+  .gbtn.stop:hover{color:var(--rose);border-color:rgba(208,122,114,.45)}
+  .gbtn.stop.live{color:var(--rose);border-color:rgba(208,122,114,.5);background:rgba(208,122,114,.1);
+    box-shadow:0 0 0 1px rgba(208,122,114,.18)}
+  .tinybtn.stop.live{color:var(--rose);border-color:rgba(208,122,114,.45)}
 
   /* ── каркас ── */
   .shell{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1fr) 318px;gap:22px;
@@ -169,7 +175,7 @@
   .tl{position:relative;padding-left:22px;display:flex;flex-direction:column;gap:2px}
   .tl::before{content:"";position:absolute;left:4px;top:8px;bottom:10px;width:1px;
     background:linear-gradient(180deg,var(--jade-deep),rgba(47,107,94,.12))}
-  .tl .s{position:relative;padding:5px 0;display:flex;align-items:flex-start;gap:9px}
+  .tl .s{position:relative;padding:5px 0;display:flex;align-items:flex-start;flex-wrap:wrap;gap:9px}
   .tl .s::before{content:"";position:absolute;left:-22px;top:11px;width:9px;height:9px;border-radius:50%;
     background:var(--bg);border:1.5px solid var(--jade-deep)}
   .tl .s.done::before{background:var(--jade-deep)}
@@ -180,6 +186,21 @@
   @keyframes beat{50%{box-shadow:0 0 0 9px rgba(111,191,168,.04)}}
   .tl .s .n{font-size:13px;color:#D3E0E1;font-weight:300;flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
   .tl .s .t{font-family:Consolas,monospace;font-size:11px;color:var(--faint);flex:none}
+  .tl .s.brain::before{border-color:var(--violet);background:var(--violet)}
+  .tl .s.tool::before{border-color:var(--sky);background:var(--sky)}
+  .tl .s .tooltag{display:inline-block;font-family:Consolas,monospace;font-size:11px;font-weight:600;
+    color:var(--jade2);border:1px solid rgba(111,191,168,.35);background:rgba(111,191,168,.08);
+    border-radius:6px;padding:0 6px;margin-right:6px;vertical-align:1px}
+  .tl .s.brain .tooltag{color:var(--violet);border-color:rgba(140,120,200,.4);background:rgba(140,120,200,.1)}
+  .tl .s .argtag{font-family:Consolas,monospace;font-size:11.5px;color:var(--sand);margin-left:4px}
+  .tl .s .out{margin-top:6px;width:100%;flex:1 1 100%}
+  .tl .s .out pre{margin:0;padding:8px 10px;border-radius:8px;background:var(--code-bg);border:1px solid var(--edge);
+    font-family:Consolas,monospace;font-size:11.5px;color:#C9D6D8;white-space:pre-wrap;overflow-wrap:anywhere;
+    max-height:7.5em;overflow:hidden}
+  .tl .s .out details{margin-top:4px}
+  .tl .s .out details summary{cursor:pointer;color:var(--faint);font-size:11.5px;user-select:none}
+  .tl .s .out details[open] summary{margin-bottom:4px}
+  .tl .s .out details pre{max-height:min(40vh,420px);overflow:auto}
 
   /* подтверждение */
   .ask{padding:17px 19px;max-width:760px;border-color:rgba(216,179,122,.26);background:rgba(216,179,122,.05)}
@@ -198,6 +219,7 @@
 
   /* композер */
   .dock{padding:12px 14px;display:flex;align-items:flex-end;gap:12px;border-radius:20px;margin-top:12px}
+  .dock.dragover{outline:1px dashed var(--jade);outline-offset:3px}
   .dock textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font:inherit;font-size:14.5px;
     font-weight:300;resize:none;min-height:26px;max-height:180px;line-height:1.55;padding:5px 0}
   .dock textarea::placeholder{color:var(--faint)}
@@ -278,6 +300,12 @@
   #reportJson pre{background:var(--code-bg);border:1px solid var(--edge);border-radius:10px;padding:12px;
     overflow:auto;max-height:360px;font-family:Consolas,monospace;font-size:12px;color:#C9D6D8}
   details summary{cursor:pointer;color:var(--faint);font-size:12.5px}
+  details.secfold{padding:16px 19px;margin:18px 0 14px}
+  details.secfold>summary.lbl{display:block;margin-bottom:0;list-style:none;color:var(--dim);user-select:none}
+  details.secfold>summary.lbl::-webkit-details-marker{display:none}
+  details.secfold>summary.lbl::before{content:"▸ ";color:var(--jade);font-size:11px}
+  details.secfold[open]>summary.lbl{margin-bottom:11px}
+  details.secfold[open]>summary.lbl::before{content:"▾ "}
 
   /* ── артефакты ── */
   .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(186px,1fr));gap:13px;padding-bottom:16px}
@@ -369,8 +397,18 @@
   .fit.hybrid{color:var(--sand);border-color:rgba(216,179,122,.4);background:rgba(216,179,122,.07)}
   .fit.cpu{color:var(--sky);border-color:rgba(127,169,201,.4);background:rgba(127,169,201,.08)}
   .fit.no{color:var(--rose);border-color:rgba(208,122,114,.4);background:rgba(208,122,114,.07)}
-  .dlbar{height:3px;background:rgba(255,255,255,.06);border-radius:99px;margin-top:8px;overflow:hidden}
+  .dlbar{height:6px;background:rgba(255,255,255,.06);border-radius:99px;margin:8px 0 4px;overflow:hidden}
   .dlbar i{display:block;height:100%;background:var(--jade);width:0;transition:width .25s}
+  .dlbar.busy i{background:linear-gradient(90deg,var(--jade-deep),var(--jade),var(--jade2))}
+  .sidemod{display:flex;flex-direction:column;gap:3px;padding:7px 0;border-top:1px solid rgba(255,255,255,.045);min-width:0}
+  .sidemod:first-child{border-top:none}
+  .sidemod button{all:unset;cursor:pointer;display:flex;flex-direction:column;gap:2px;min-width:0}
+  .sidemod button:hover .nm{color:var(--text)}
+  .sidemod .nm{font-size:12.5px;color:#CBD8DA;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sidemod .meta{margin-top:0;font-size:11px;color:var(--faint);display:flex;gap:8px;flex-wrap:wrap}
+  .sidemod.on .nm{color:var(--jade2)}
+  .sidemod.pending .nm{color:var(--sand)}
+  .sidemod:disabled, .sidemod button:disabled{opacity:.45;cursor:default}
   .pendnote{font-size:12.5px;color:var(--sand);margin:0 0 12px;padding:8px 12px;border:1px solid rgba(216,179,122,.28);
     border-radius:10px;background:rgba(216,179,122,.06)}
   select.pick{background:var(--glass);border:1px solid var(--edge);border-radius:999px;padding:6px 12px;
@@ -449,10 +487,13 @@
     <span class="h"><i id="dotWhisper"></i><span id="chipWhisper">голос…</span></span>
   </div>
   <div class="head-r">
+    <button class="gbtn stop" id="headStopBtn" type="button" title="Остановить текущую задачу (Esc) — работает с любой вкладки, даже посреди команды">
+      <svg class="icon"><use href="#i-stop"></use></svg>Стоп
+    </button>
     <button class="gbtn" id="handsBtn" type="button" title="Длина рук: короткие — опасное спрашивает подтверждение; длинные — весь ПК без вопросов (ядерное переспрашивается один раз)">
       <svg class="icon"><use href="#i-shield"></use></svg><span id="handsLabel">руки: короткие</span>
     </button>
-    <button class="gbtn" id="ttsBtn" type="button" title="Озвучка SuperTonic: всегда читать ответы или только по кнопке «Озвучить»">
+    <button class="gbtn" id="ttsBtn" type="button" title="Озвучка Qwen3-TTS: всегда читать ответы или только по кнопке «Озвучить»">
       <svg class="icon"><use href="#i-speak"></use></svg><span id="ttsLabel">озвучка: по запросу</span>
     </button>
     <button class="gbtn" id="compactBtn" type="button" title="Сжать историю диалога в сводку (аналог /compact)">
@@ -472,6 +513,7 @@
         <button type="button" data-tab="analyze"><svg class="icon"><use href="#i-chart"></use></svg>Разбор</button>
         <button type="button" data-tab="agent"><svg class="icon"><use href="#i-agent"></use></svg>Агент</button>
         <button type="button" data-tab="video"><svg class="icon"><use href="#i-video"></use></svg>Видео</button>
+        <button type="button" data-tab="security"><svg class="icon"><use href="#i-shield"></use></svg>Кибербезопасность</button>
         <button type="button" data-tab="files"><svg class="icon"><use href="#i-files"></use></svg>Файлы</button>
         <button type="button" data-tab="models"><svg class="icon"><use href="#i-chip"></use></svg>Модели</button>
         <button type="button" data-tab="status"><svg class="icon"><use href="#i-pulse"></use></svg>Статус</button>
@@ -490,13 +532,12 @@
         <button class="ic" id="micBtn" type="button" aria-label="Голосовое сообщение"
                 title="Голос: зажми, говори, отпусти — распознаю и отвечу">
           <svg class="icon"><use href="#i-mic"></use></svg></button>
-        <input type="file" id="fileInput" style="display:none"
-               accept="image/*,audio/*,video/*,application/pdf,.pdf,.mp4,.mov,.mkv,.avi,.m4v,.wmv,.webm,.ogg,.oga,.mp3,.wav,.m4a,.go,.py,.js,.ts,.tsx,.jsx,.rs,.c,.h,.cpp,.java,.kt,.cs,.rb,.php,.swift,.sh,.ps1,.bat,.cmd,.sql,.html,.css,.scss,.json,.yaml,.yml,.toml,.ini,.xml,.md,.csv,.txt,.log,.env,.conf">
+        <input type="file" id="fileInput" style="display:none" accept="*/*">
         <textarea id="input" rows="1" placeholder="Сообщение · найди… · запусти… · разбери видео или PDF · /agent · голосом 🎙"></textarea>
         <button class="go" id="send" type="button"><svg class="icon"><use href="#i-send"></use></svg>Отправить</button>
       </div>
       <div class="undock">
-        <button class="tinybtn" id="stopBtn" type="button"><svg class="icon" style="width:13px;height:13px"><use href="#i-stop"></use></svg>Стоп</button>
+        <button class="tinybtn stop" id="stopBtn" type="button" title="Остановить текущую задачу (то же, что Стоп в шапке и Esc)"><svg class="icon" style="width:13px;height:13px"><use href="#i-stop"></use></svg>Стоп</button>
         <span class="hint">
           <span><b>Enter</b> отправить</span><span><b>Shift+Enter</b> перенос</span><span><b>Esc</b> остановить</span>
         </span>
@@ -603,6 +644,92 @@
       </div>
     </section>
 
+    <!-- КИБЕРБЕЗОПАСНОСТЬ -->
+    <section class="tab" id="tab-security">
+      <div class="scroll">
+        <div class="panel section" style="margin-bottom:14px">
+          <span class="lbl">Тест на прочность</span>
+          <div class="body" style="font-size:13.5px;color:var(--dim)">
+            <p>Авторизованная проверка <strong>своего</strong> сайта или API. Итог — MD-отчёт в
+            <code class="inl">runtime/browser/security/</code>: дыра, где, как воспроизвести, как лечить.</p>
+            <p>Глубина: <strong>лайт</strong> — только HTTP-проба;
+            <strong>обязательный</strong> — проба + чеклист плейбука;
+            <strong>полный</strong> — чеклисты + браузер + стек из <code class="inl">tools.json</code>
+            (nuclei, httpx, subfinder, katana, ffuf, nmap… что установлено).</p>
+            <p>В Telegram: <code class="inl">/stress light https://example.com</code> ·
+            <code class="inl">/stress full https://…</code>
+            (алиасы <code class="inl">/прочность</code>, <code class="inl">/websec</code>, <code class="inl">/pentest</code>).
+            Хеш файла — <code class="inl">/audit</code>.</p>
+          </div>
+        </div>
+        <div class="arow" style="margin-bottom:10px;align-items:center">
+          <span class="lbl" style="margin:0">Глубина</span>
+          <div class="quick" id="secMode" role="radiogroup" aria-label="Глубина проверки">
+            <button class="qb" type="button" role="radio" aria-checked="false" data-mode="light" title="Только HTTP-проба → отчёт">Лайт</button>
+            <button class="qb on" type="button" role="radio" aria-checked="true" data-mode="required" title="Проба + минимум плейбука">Обязательный</button>
+            <button class="qb" type="button" role="radio" aria-checked="false" data-mode="full" title="Чеклисты + браузер + все CLI из PATH">Полный</button>
+          </div>
+          <span class="lbl" id="secModeHint" style="margin:0;flex:1;min-width:12rem">проба + чеклист плейбука</span>
+        </div>
+        <div class="arow">
+          <div class="field wide"><svg class="icon" style="color:var(--faint)"><use href="#i-shield"></use></svg>
+            <input id="secURL" placeholder="https://ваш-сайт.com  ·  можно добавить фокус: headers cookies admin"></div>
+          <button class="go" id="secRun" type="button">Проверить</button>
+        </div>
+        <div id="secCtxAttachBar" style="display:none;margin:0 0 8px"></div>
+        <div class="panel dock" style="margin-top:0;margin-bottom:14px" title="Контекст уходит агенту вместе с URL; можно прикрепить любой файл">
+          <button class="ic" id="secCtxAttachBtn" type="button" aria-label="Прикрепить файл к контексту"
+                  title="Любой файл: MD, Word, Excel, код, картинка, видео, PDF…">
+            <svg class="icon"><use href="#i-clip"></use></svg></button>
+          <input type="file" id="secCtxFile" style="display:none" accept="*/*">
+          <textarea id="secContext" rows="2" placeholder="Контекст для агента: что можно трогать, учётка/роль, что НЕ делать… + файл 📎"></textarea>
+        </div>
+        <div id="secOut"></div>
+        <div id="secFollowAttachBar" style="display:none;margin:12px 0 8px"></div>
+        <div class="panel dock" id="secFollowDock" style="margin-top:0">
+          <button class="ic" id="secFollowAttachBtn" type="button" aria-label="Прикрепить файл к ответу"
+                  title="Любой файл в ответ агенту: MD, Word, Excel, код, картинка, видео, PDF…">
+            <svg class="icon"><use href="#i-clip"></use></svg></button>
+          <input type="file" id="secFollowFile" style="display:none" accept="*/*">
+          <textarea id="secFollow" rows="1" placeholder="Ответить агенту: «да» / «нет» / уточнение · или файл 📎"></textarea>
+          <button class="go" id="secFollowSend" type="button">Отправить</button>
+        </div>
+
+        <details class="panel secfold" data-fold-key="sec-reports">
+          <summary class="lbl">Отчёты</summary>
+          <div class="body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="qb" id="secReportsReload" type="button"><svg class="icon" style="width:13px;height:13px"><use href="#i-reset"></use></svg>Обновить</button>
+            <span class="lbl" id="secReportsCount"></span>
+          </div>
+          <div id="secReports" style="margin-top:10px"></div>
+        </details>
+
+        <details class="panel secfold" data-fold-key="sec-cli">
+          <summary class="lbl">Локальные CLI (плейбук /stress full)</summary>
+          <div class="body" style="font-size:13.5px;color:var(--dim);margin-top:6px">
+            Это сканеры на этом ПК. Каталог ниже — только ссылки на awesome-списки, не установленные программы.
+          </div>
+          <div class="body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+            <button class="qb" id="secToolsReload" type="button"><svg class="icon" style="width:13px;height:13px"><use href="#i-reset"></use></svg>Обновить статус</button>
+            <span class="lbl" id="secToolsSummary"></span>
+          </div>
+          <div id="secTools" style="margin-top:10px"></div>
+        </details>
+
+        <details class="panel secfold" data-fold-key="sec-catalog">
+          <summary class="lbl">Каталог Hacker Tools</summary>
+          <div class="body" style="font-size:13px;color:var(--dim);margin:6px 0 0">Индекс Awesome-Hacking: методики и списки репозиториев. Не CLI на диске.</div>
+          <div class="arow" style="margin-top:8px">
+            <div class="field wide"><svg class="icon" style="color:var(--faint)"><use href="#i-files"></use></svg>
+              <input id="secCatQ" placeholder="Поиск: web, appsec, pentest, reversing, osint…"></div>
+            <button class="qb" id="secCatSearch" type="button">Искать</button>
+          </div>
+          <div class="lbl" id="secCatMeta" style="margin:8px 0"></div>
+          <div id="secCatalog"></div>
+        </details>
+      </div>
+    </section>
+
     <!-- ФАЙЛЫ -->
     <section class="tab" id="tab-files">
       <div class="scroll">
@@ -631,6 +758,11 @@
             <div class="num">—</div><div class="sub">нажми «Тест железа»</div></div>
         </div>
         <div class="pendnote" id="modelPend" style="display:none"></div>
+        <div class="panel section" id="modDLBox" style="display:none;margin-bottom:14px">
+          <span class="lbl" id="modDLLabel">скачивание</span>
+          <div class="dlbar busy"><i id="modDLFill"></i></div>
+          <div class="kv"><span id="modDLMeta">—</span><b id="modDLPct">—</b></div>
+        </div>
         <div class="modbar">
           <div class="field wide"><svg class="icon" style="color:var(--faint)"><use href="#i-chip"></use></svg>
             <input id="modQ" placeholder="Поиск: qwen, llama, gemma, unsloth…"></div>
@@ -659,6 +791,21 @@
   </main>
 
   <aside>
+    <div class="panel side" id="brainSide">
+      <h3><span class="lbl">Мозг</span><span class="r mono" id="brainSideState">—</span></h3>
+      <div class="kv"><span>в VRAM</span><b id="brainNow">—</b></div>
+      <div class="kv"><span>зрение</span><b id="brainVision">—</b></div>
+      <div id="dlBox" style="display:none;margin-top:8px">
+        <div class="kv"><span>скачиваю</span><b id="dlName">—</b></div>
+        <div class="dlbar busy"><i id="dlFill"></i></div>
+        <div class="kv"><span>прогресс</span><b id="dlPct">—</b></div>
+        <button class="tinybtn" id="dlCancel" type="button" style="margin-top:6px">Отменить</button>
+      </div>
+      <div class="pendnote" id="swBox" style="display:none;margin-top:8px"></div>
+      <div class="lbl" style="margin:12px 0 4px">на диске</div>
+      <div id="sideModels"><div class="kv"><span>пока пусто</span></div></div>
+    </div>
+
     <div class="panel side">
       <h3><span class="lbl">Генерация</span><span class="r mono" id="genPhase">простаивает</span></h3>
       <div class="big"><b id="genRate">—</b><span id="genUnit">ток/с</span></div>
@@ -687,7 +834,7 @@
         <div class="info">
           <div>занято <b id="ctxUsed">—</b> из <b id="ctxTotal">—</b></div>
           <div>история <b id="ctxHist">—</b> реплик</div>
-          <div>автосжатие на <b id="ctxAuto">—</b></div>
+          <div>автосжатие с <b id="ctxAuto">—</b> окна</div>
         </div>
       </div>
     </div>
@@ -734,6 +881,7 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   $("tab-" + b.dataset.tab).classList.add("on");
   if (b.dataset.tab === "files") loadArtifacts();
   if (b.dataset.tab === "models") { if (!hwLoaded) probeHardware(true); }
+  if (b.dataset.tab === "security") { loadHackerCatalog(); loadSecurityReports(); }
 });
 
 /* ═══ тосты ═══ */
@@ -1034,6 +1182,27 @@ function setWorkLabel(text) {
   paintWorkMeta();
   scrollDown();
 }
+function workLabelFromEv(ev) {
+  if (!ev) return "";
+  if (ev.tool) {
+    const bits = [ev.tool];
+    if (ev.args) bits.push(ev.args);
+    else if (ev.status) bits.push(ev.status);
+    return bits.join(" → ");
+  }
+  return ev.status || "";
+}
+function pushTraceStatus(trace, ev) {
+  if (!trace || !ev) return;
+  trace.add(ev.status, {
+    phase: ev.phase || "",
+    tool: ev.tool || "",
+    args: ev.args || "",
+    preview: ev.preview || "",
+    body: ev.body || "",
+  });
+  setWorkLabel(workLabelFromEv(ev));
+}
 function paintWorkMeta() {
   if (!workNode) return;
   const meta = workNode.querySelector(".wmeta");
@@ -1073,12 +1242,17 @@ function newTrace(host) {
   let steps = 0, lastNode = null, lastAt = started, done = false;
   const secs = ms => { const s = ms / 1000;
     return s < 60 ? s.toFixed(1) + " с" : Math.floor(s/60) + " м " + Math.round(s % 60) + " с"; };
-  const kindOf = t => /⛔|❌|не удалось|провал|ошибк/i.test(t) ? "bad"
-    : /⏸|⚠|подтвержд|очеред/i.test(t) ? "warn" : "done";
+  const kindOf = (t, phase) => {
+    if (phase === "brain") return "brain";
+    if (phase === "tool") return "tool";
+    if (/⛔|❌|не удалось|провал|ошибк|❌/i.test(t || "")) return "bad";
+    if (/⏸|⚠|подтвержд|очеред/i.test(t || "")) return "warn";
+    return "done";
+  };
   const close = () => {
     if (!lastNode) return;
     lastNode.classList.remove("live");
-    lastNode.classList.add(kindOf(lastNode.dataset.text || ""));
+    lastNode.classList.add(kindOf(lastNode.dataset.text || "", lastNode.dataset.phase || ""));
     lastNode.querySelector(".t").textContent = secs(Date.now() - lastAt);
   };
   const toggle = ev => {
@@ -1089,14 +1263,66 @@ function newTrace(host) {
   box.querySelector(".th").onclick = toggle;
   box.onclick = toggle;
   return {
-    add(text) {
-      if (!text) return;
+    add(text, meta) {
+      if (!text && !(meta && meta.tool)) return;
+      meta = meta || {};
       close();
       box.classList.remove("shut");
-      const s = el("div", "s live");
-      s.dataset.text = text;
+      const phase = meta.phase || "";
+      const s = el("div", "s live" + (phase === "brain" ? " brain" : phase === "tool" ? " tool" : ""));
+      s.dataset.text = text || "";
+      s.dataset.phase = phase;
       s.innerHTML = '<span class="n"></span><span class="t">…</span>';
-      s.querySelector(".n").textContent = text;
+      const n = s.querySelector(".n");
+      if (meta.tool) {
+        const tag = document.createElement("span");
+        tag.className = "tooltag";
+        tag.textContent = meta.tool;
+        n.appendChild(tag);
+      } else if (phase === "brain") {
+        const tag = document.createElement("span");
+        tag.className = "tooltag";
+        tag.textContent = "мозг";
+        n.appendChild(tag);
+      }
+      let labelText = text || (meta.tool ? "работаю…" : "");
+      // Убираем дубли: badge уже показал tool / «мозг».
+      if (meta.tool) {
+        labelText = labelText.replace(new RegExp("`?" + meta.tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "`?\\s*[·→:\\-]*\\s*", "ig"), "");
+        labelText = labelText.replace(new RegExp("\\s*·\\s*`?" + meta.tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "`?\\s*$", "ig"), "");
+      }
+      if (phase === "brain") {
+        labelText = labelText.replace(/^🧠\s*/, "").replace(/^мозг\s*[·:\-]\s*/i, "");
+      }
+      const label = document.createElement("span");
+      label.textContent = labelText.trim() || (meta.tool ? "…" : text || "");
+      n.appendChild(label);
+      if (meta.args && meta.tool && !(labelText || "").includes(meta.args)) {
+        const a = document.createElement("span");
+        a.className = "argtag";
+        a.textContent = meta.args;
+        n.appendChild(a);
+      }
+      const preview = (meta.preview || "").trim();
+      const body = (meta.body || "").trim();
+      if (preview || body) {
+        const out = el("div", "out");
+        const pre = document.createElement("pre");
+        pre.textContent = preview || body.split(/\r?\n/).slice(0, 3).join("\n");
+        out.appendChild(pre);
+        if (body && body !== preview && body.length > (preview || "").length + 8) {
+          const det = document.createElement("details");
+          const sum = document.createElement("summary");
+          sum.textContent = "развернуть ответ";
+          const full = document.createElement("pre");
+          full.textContent = body;
+          det.appendChild(sum);
+          det.appendChild(full);
+          det.addEventListener("toggle", ev => ev.stopPropagation());
+          out.appendChild(det);
+        }
+        s.appendChild(out);
+      }
       tl.appendChild(s);
       lastNode = s; lastAt = Date.now(); steps++;
       counter.textContent = steps + (steps === 1 ? " шаг" : steps < 5 ? " шага" : " шагов");
@@ -1210,8 +1436,7 @@ async function send() {
       if (ev.error) { stopWork(); host.classList.add("err"); body.textContent = "⚠ " + ev.error; return; }
       if (ev.status !== undefined && !ev.done) {
         if (!trace) trace = newTrace(host);
-        trace.add(ev.status);
-        setWorkLabel(ev.status);
+        pushTraceStatus(trace, ev);
         return;
       }
       if (ev.done) {
@@ -1260,8 +1485,11 @@ input.addEventListener("keydown", e => {
 
 /* ═══ подтверждение опасного шага ═══
    Кнопка «да» без текста вопроса — согласие неизвестно на что. Панель показывает инструмент,
-   аргументы и правило ворот: ровно то, что видно в Telegram. */
-function renderConfirm(host, p) {
+   аргументы и правило ворот: ровно то, что видно в Telegram.
+   opts.resumeRoot — куда писать продолжение (secOut / agentOut). Без него — в ленту Чата. */
+function renderConfirm(host, p, opts) {
+  opts = opts || {};
+  const resumeRoot = opts.resumeRoot || null;
   const box = el("div", "panel ask");
   const args = p && p.args ? p.args : "";
   const why = [];
@@ -1270,60 +1498,87 @@ function renderConfirm(host, p) {
   if (p && p.expires_in) why.push("вопрос снимется через " + Math.max(1, Math.round(p.expires_in / 60)) + " мин");
   box.innerHTML =
     "<h4>" + (p && p.tool ? "Подтвердить: " + esc(p.tool) : "Подтвердить действие") + "</h4>" +
-    (why.length ? '<div class="why">' + why.join(" · ") + "</div>" : '<div class="why">Агент ждёт решения.</div>') +
+    (why.length ? '<div class="why">' + why.join(" · ") + "</div>" : '<div class="why">Агент ждёт решения — Выполнить / Отказать, либо «да»/«нет» в поле ниже.</div>') +
     (args ? '<div class="cmd">' + esc(args) + "</div>" : "") +
     '<div class="row"><button class="yes" type="button">Выполнить</button>' +
     '<button class="no" type="button">Отказать</button></div>';
   const [yes, no] = box.querySelectorAll("button");
   const answer = async approve => {
     box.remove();
-    const h = el("div", "reply");
-    h.appendChild(el("span", "lbl", "Kibborg"));
-    const b = el("div", "body");
-    h.appendChild(b);
-    flow.appendChild(h);
-    startWork(b, approve ? "Выполняю…" : "Отменяю…");
+    let wrap, bodyEl;
+    if (resumeRoot) {
+      wrap = el("div", "panel section");
+      bodyEl = el("div", "body");
+      wrap.appendChild(bodyEl);
+      resumeRoot.appendChild(wrap);
+    } else {
+      wrap = el("div", "reply");
+      wrap.appendChild(el("span", "lbl", "Kibborg"));
+      bodyEl = el("div", "body");
+      wrap.appendChild(bodyEl);
+      flow.appendChild(wrap);
+    }
+    startWork(bodyEl, approve ? "Выполняю…" : "Отменяю…");
     let trace = null;
     try {
       const resp = await fetch("/api/confirm", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approve }),
+        body: JSON.stringify({ approve, id: p && p.id ? p.id : "" }),
       });
+      if (!resp.ok) {
+        stopWork(); wrap.classList.add("err"); bodyEl.textContent = "⚠ " + (await resp.text());
+        return;
+      }
       await readNdjson(resp, ev => {
-        if (ev.error) { stopWork(); h.classList.add("err"); b.textContent = "⚠ " + ev.error; return; }
+        if (ev.error) { stopWork(); wrap.classList.add("err"); bodyEl.textContent = "⚠ " + ev.error; return; }
         if (ev.status !== undefined && !ev.done) {
-          if (!trace) trace = newTrace(h);
-          trace.add(ev.status); setWorkLabel(ev.status);
+          if (!trace) trace = newTrace(wrap);
+          pushTraceStatus(trace, ev);
           return;
         }
         if (ev.done) {
           stopWork();
           if (trace) trace.finish();
           const txt = ev.text || "";
-          b.innerHTML = renderMd(txt);
-          if (ev.waiting) renderConfirm(h, ev.pending || null);
-          fileLinks(h, ev.files);
-          addCopy(h, () => txt);
-          if (ttsAuto && txt) speakText(txt, null, h);
+          bodyEl.innerHTML = renderMd(txt);
+          if (ev.waiting) renderConfirm(wrap, ev.pending || null, opts);
+          fileLinks(wrap, ev.files);
+          addCopy(wrap, () => txt);
+          if (ttsAuto && txt) speakText(txt, null, wrap);
           loadArtifactsSoon();
+          if (resumeRoot === $("secOut")) loadSecurityReports();
         }
       });
-    } catch (e) { stopWork(); h.classList.add("err"); b.textContent = "⚠ " + e.message; }
+    } catch (e) { stopWork(); wrap.classList.add("err"); bodyEl.textContent = "⚠ " + e.message; }
     stopWork();
   };
   yes.onclick = () => answer(true);
   no.onclick = () => answer(false);
   host.appendChild(box);
-  scrollDown(true);
+  if (!resumeRoot) scrollDown(true);
+  else try { host.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
 }
 
-/* ═══ стоп · сжатие · сброс · руки ═══ */
-$("stopBtn").onclick = async () => {
+/* ═══ стоп · сжатие · сброс · руки ═══
+   Стоп в шапке (#headStopBtn) — глобальный, с любой вкладки. Дубль под чатом (#stopBtn) и Esc. */
+let stopInFlight = false;
+async function doStop() {
+  if (stopInFlight) return;
+  stopInFlight = true;
   try {
     const j = await (await fetch("/api/stop", { method: "POST" })).json();
-    toast(j.text || "Остановлено.");
+    toast(j.text || "Остановлено.", j.stopped ? "" : "warn");
   } catch (e) { toast("Не вышло: " + e.message, "bad"); }
-};
+  stopInFlight = false;
+}
+function paintStopLive(on) {
+  ["headStopBtn", "stopBtn"].forEach(id => {
+    const b = $(id);
+    if (b) b.classList.toggle("live", !!on);
+  });
+}
+$("stopBtn").onclick = doStop;
+$("headStopBtn").onclick = doStop;
 async function doCompact() {
   const btns = [$("compactBtn"), $("sideCompact")];
   btns.forEach(b => b && (b.disabled = true));
@@ -1385,7 +1640,7 @@ ttsBtn.onclick = async () => {
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if ($("lightbox").classList.contains("on")) { $("lightbox").classList.remove("on"); return; }
-  $("stopBtn").click();
+  doStop();
 });
 
 /* ═══ голос ═══ */
@@ -1948,23 +2203,30 @@ function paintRSIBar() {
   bar.style.display = "flex";
 }
 
-/* ═══ агент и видео ═══ */
-function streamInto(host, url, payload, firstLabel) {
-  host.innerHTML = "";
+/* ═══ агент и видео / кибербезопасность ═══
+   opts.append — не стирать host (дописка «да»/уточнения на той же вкладке).
+   opts.body — готовый FormData (файл); иначе JSON.stringify(payload).
+   При waiting рисуем кнопки Выполнить/Отказать ЗДЕСЬ, а не только в Чате. */
+function streamInto(host, url, payload, firstLabel, opts) {
+  opts = opts || {};
+  if (!opts.append) host.innerHTML = "";
   const panel = el("div", "panel section");
   const body = el("div", "body");
   panel.appendChild(body);
   host.appendChild(panel);
   startWork(body, firstLabel);
   let trace = null;
-  return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+  const init = opts.body
+    ? { method: "POST", body: opts.body }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
+  return fetch(url, init)
     .then(async resp => {
       if (!resp.ok) { stopWork(); body.textContent = "⚠ " + (await resp.text()); return; }
       await readNdjson(resp, ev => {
         if (ev.error) { stopWork(); body.textContent = "⚠ " + ev.error; return; }
         if (ev.status !== undefined && !ev.done) {
           if (!trace) trace = newTrace(panel);
-          trace.add(ev.status); setWorkLabel(ev.status);
+          pushTraceStatus(trace, ev);
           return;
         }
         if (ev.done) {
@@ -1973,9 +2235,10 @@ function streamInto(host, url, payload, firstLabel) {
           let head = "";
           if (ev.plan && ev.plan.length) head = "**План:**\n" + ev.plan.map((p, i) => (i + 1) + ". " + p).join("\n") + "\n\n";
           body.innerHTML = renderMd(head + (ev.text || ""));
+          if (ev.waiting) renderConfirm(panel, ev.pending || null, { resumeRoot: host });
           fileLinks(panel, ev.files);
           addCopy(panel, () => ev.text || "");
-          if (ttsAuto && ev.text) speakText(ev.text, null, panel);
+          if (ttsAuto && ev.text && !ev.waiting) speakText(ev.text, null, panel);
           loadArtifactsSoon();
           return;
         }
@@ -1993,6 +2256,267 @@ async function runAgent() {
 }
 $("agentRun").onclick = runAgent;
 $("agentTask").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); runAgent(); } });
+
+/* ═══ кибербезопасность ═══ */
+const SEC_MODE_HINTS = {
+  light: "только HTTP-проба → отчёт",
+  required: "проба + чеклист плейбука",
+  full: "чеклисты + браузер + все CLI из PATH",
+};
+const SEC_MODE_KEY = "kibborg.sec.mode";
+function selectedSecMode() {
+  const on = document.querySelector("#secMode .qb.on");
+  return (on && on.dataset.mode) || "required";
+}
+function paintSecMode(mode, persist) {
+  const m = SEC_MODE_HINTS[mode] ? mode : "required";
+  document.querySelectorAll("#secMode .qb").forEach(b => {
+    const on = b.dataset.mode === m;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const hint = $("secModeHint");
+  if (hint) hint.textContent = SEC_MODE_HINTS[m] || "";
+  if (persist !== false) {
+    try { localStorage.setItem(SEC_MODE_KEY, m); } catch (_) {}
+  }
+}
+document.querySelectorAll("#secMode .qb").forEach(b => {
+  b.onclick = () => paintSecMode(b.dataset.mode, true);
+});
+(function initSecMode() {
+  let saved = "";
+  try { saved = localStorage.getItem(SEC_MODE_KEY) || ""; } catch (_) {}
+  paintSecMode(saved || "required", false);
+})();
+
+/* Сворачиваемые блоки secops: по умолчанию свёрнуты, последнее состояние — в localStorage. */
+(function bindSecFolds() {
+  document.querySelectorAll("details[data-fold-key]").forEach(el => {
+    const key = "kibborg.fold." + el.dataset.foldKey;
+    let saved = null;
+    try { saved = localStorage.getItem(key); } catch (_) {}
+    el.open = saved === "1";
+    el.addEventListener("toggle", () => {
+      try { localStorage.setItem(key, el.open ? "1" : "0"); } catch (_) {}
+    });
+  });
+})();
+
+function splitSecInput(raw) {
+  const parts = (raw || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { url: "", focus: "" };
+  let url = parts[0];
+  if (!/^[a-z]+:\/\//i.test(url) && url.includes(".")) url = "https://" + url;
+  return { url, focus: parts.slice(1).join(" ") };
+}
+/* Вложения на вкладке Кибербезопасность (контекст + ответ агенту). Любой формат. */
+let secCtxFile = null, secFollowFile = null;
+function paintSecAttach(barId, file, clearer) {
+  const bar = $(barId);
+  if (!bar) return;
+  bar.innerHTML = "";
+  if (!file) { bar.style.display = "none"; return; }
+  const isImg = (file.type || "").startsWith("image/");
+  const chip = el("div", "attach");
+  chip.innerHTML = (isImg ? '<img alt="">' : ic("doc", 20)) +
+    '<span class="nm">' + esc(file.name) + " · " + fmtSize(file.size) + "</span>" +
+    '<button class="rm" type="button" title="Убрать">×</button>';
+  bar.appendChild(chip);
+  bar.style.display = "block";
+  chip.querySelector(".rm").onclick = clearer;
+  if (isImg) chip.querySelector("img").src = URL.createObjectURL(file);
+}
+function setSecCtxFile(file) {
+  secCtxFile = file || null;
+  paintSecAttach("secCtxAttachBar", secCtxFile, () => setSecCtxFile(null));
+}
+function setSecFollowFile(file) {
+  secFollowFile = file || null;
+  paintSecAttach("secFollowAttachBar", secFollowFile, () => setSecFollowFile(null));
+}
+if ($("secCtxAttachBtn") && $("secCtxFile")) {
+  $("secCtxAttachBtn").onclick = () => $("secCtxFile").click();
+  $("secCtxFile").onchange = () => {
+    if ($("secCtxFile").files[0]) setSecCtxFile($("secCtxFile").files[0]);
+    $("secCtxFile").value = "";
+  };
+}
+if ($("secFollowAttachBtn") && $("secFollowFile")) {
+  $("secFollowAttachBtn").onclick = () => $("secFollowFile").click();
+  $("secFollowFile").onchange = () => {
+    if ($("secFollowFile").files[0]) setSecFollowFile($("secFollowFile").files[0]);
+    $("secFollowFile").value = "";
+  };
+}
+[["secContext", setSecCtxFile], ["secFollow", setSecFollowFile]].forEach(([id, setter]) => {
+  const node = $(id);
+  if (!node) return;
+  const dock = node.closest(".dock") || node.parentElement;
+  if (!dock) return;
+  dock.addEventListener("dragover", e => { e.preventDefault(); dock.classList.add("dragover"); });
+  dock.addEventListener("dragleave", () => dock.classList.remove("dragover"));
+  dock.addEventListener("drop", e => {
+    e.preventDefault(); dock.classList.remove("dragover");
+    if (e.dataTransfer.files[0]) setter(e.dataTransfer.files[0]);
+  });
+});
+
+async function runSecurity() {
+  const raw = $("secURL").value.trim();
+  if (!raw || $("secRun").disabled) return;
+  const { url, focus: focusFromURL } = splitSecInput(raw);
+  if (!url) return;
+  const ctx = ($("secContext") && $("secContext").value.trim()) || "";
+  const focus = [focusFromURL, ctx].filter(Boolean).join("\n");
+  const mode = selectedSecMode();
+  const file = secCtxFile;
+  $("secRun").disabled = true;
+  if ($("secFollowSend")) $("secFollowSend").disabled = true;
+  const label = mode === "light" ? "лайт" : mode === "full" ? "полный" : "обязательный";
+  const first = file
+    ? ("Готовлю тест («" + label + "») · файл " + file.name + "…")
+    : ("Готовлю тест на прочность («" + label + "»)…");
+  if (file) {
+    const fd = new FormData();
+    fd.append("url", url);
+    fd.append("focus", focus);
+    fd.append("mode", mode);
+    fd.append("file", file, file.name);
+    setSecCtxFile(null);
+    await streamInto($("secOut"), "/api/security_audit", null, first, { body: fd });
+  } else {
+    await streamInto($("secOut"), "/api/security_audit", { url, focus, mode }, first);
+  }
+  $("secRun").disabled = false;
+  if ($("secFollowSend")) $("secFollowSend").disabled = false;
+  loadSecurityReports();
+  loadArtifactsSoon();
+}
+$("secRun").onclick = runSecurity;
+$("secURL").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); runSecurity(); } });
+
+/* Дописка агенту на вкладке Кибербезопасность: «да»/«нет» снимают pending через /api/chat,
+   уточнения продолжают общий web-чат без прыжка на вкладку Чат. Файл — любой формат. */
+async function sendSecFollow() {
+  const ta = $("secFollow");
+  const text = (ta && ta.value.trim()) || "";
+  const file = secFollowFile;
+  if ((!text && !file) || ($("secFollowSend") && $("secFollowSend").disabled)) return;
+  if (ta) ta.value = "";
+  const you = el("div", "panel section");
+  const fileNote = file ? (" · 📎 " + esc(file.name)) : "";
+  you.innerHTML = '<span class="lbl">Вы</span><div class="body">' +
+    (text ? esc(text) : "<i>файл</i>") + fileNote + "</div>";
+  $("secOut").appendChild(you);
+  $("secFollowSend").disabled = true;
+  $("secRun").disabled = true;
+  const first = file ? firstWorkLabel(file) : "Думаю…";
+  if (file) {
+    const fd = new FormData();
+    fd.append("message", text);
+    fd.append("file", file, file.name);
+    setSecFollowFile(null);
+    await streamInto($("secOut"), "/api/chat", null, first, { append: true, body: fd });
+  } else {
+    await streamInto($("secOut"), "/api/chat", { message: text }, first, { append: true });
+  }
+  $("secFollowSend").disabled = false;
+  $("secRun").disabled = false;
+  loadSecurityReports();
+  loadArtifactsSoon();
+}
+$("secFollowSend").onclick = sendSecFollow;
+$("secFollow").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendSecFollow(); }
+});
+
+async function loadSecurityReports() {
+  const host = $("secReports");
+  if (!host) return;
+  try {
+    const j = await (await fetch("/api/security_reports")).json();
+    const files = j.files || [];
+    $("secReportsCount").textContent = (j.total || files.length) + " отчётов";
+    if (!files.length) {
+      host.innerHTML = '<div class="empty" style="padding:8px 0">Пока пусто — после проверки здесь появится MD.</div>';
+      return;
+    }
+    host.innerHTML = files.map(f =>
+      '<div class="kv"><span>' + esc(f.name) + '</span><b><a href="' + esc(f.url) + '" target="_blank" rel="noopener">открыть</a></b></div>'
+    ).join("");
+  } catch (e) {
+    host.innerHTML = '<div class="empty">Не смог получить отчёты: ' + esc(e.message) + "</div>";
+  }
+}
+$("secReportsReload").onclick = loadSecurityReports;
+
+function renderLocalTools(j) {
+  const host = $("secTools");
+  const sum = $("secToolsSummary");
+  if (!host) return;
+  const tools = j.local_tools || [];
+  if (sum) {
+    let s = j.local_summary || "";
+    const dicts = j.dictionaries || {};
+    const dk = Object.keys(dicts);
+    if (dk.length) s += " · словари на диске: " + dk.join(", ");
+    sum.textContent = s;
+  }
+  if (!tools.length) {
+    host.innerHTML = '<div class="empty">Нет данных о CLI</div>';
+    return;
+  }
+  host.innerHTML = tools.map(t => {
+    const badge = t.ok
+      ? '<span style="color:var(--jade2)">✔️ в PATH</span>'
+      : '<span style="color:var(--rose)">❌ нет</span>';
+    const ver = t.version ? '<div style="font-size:12px;color:var(--faint)">' + esc(t.version) + "</div>" : "";
+    const path = t.path ? '<div style="font-size:12px;color:var(--dim);word-break:break-all">' + esc(t.path) + "</div>" : "";
+    const note = t.note ? '<div style="font-size:12px;color:var(--sand)">' + esc(t.note) + "</div>" : "";
+    const install = (!t.ok && t.install)
+      ? '<div style="font-size:12px;margin-top:4px"><code class="inl">' + esc(t.install) + "</code></div>"
+      : "";
+    const tier = t.tier ? ' <span class="lbl">' + esc(t.tier) + "</span>" : "";
+    return '<div class="panel section" style="margin-bottom:8px;padding:10px 12px">' +
+      '<div class="kv"><span style="font-weight:600">' + esc(t.name) + "</span>" + tier + "<b>" + badge + "</b></div>" +
+      ver + path + note + install + "</div>";
+  }).join("");
+}
+
+async function loadHackerCatalog() {
+  const q = ($("secCatQ").value || "").trim();
+  const host = $("secCatalog");
+  try {
+    const j = await (await fetch("/api/hacker-tools?q=" + encodeURIComponent(q) + "&limit=40")).json();
+    renderLocalTools(j);
+    if (j.error) {
+      $("secCatMeta").textContent = j.error;
+      host.innerHTML = "";
+      return;
+    }
+    $("secCatMeta").textContent = (j.count || 0) + " записей" + (q ? " по «" + q + "»" : "") +
+      (j.source ? " · " + j.source : "") + " · это ссылки, не установленные тулы";
+    const entries = j.entries || [];
+    if (!entries.length) {
+      host.innerHTML = '<div class="empty">Ничего не найдено</div>';
+      return;
+    }
+    host.innerHTML = entries.map(e =>
+      '<div class="panel section" style="margin-bottom:8px;padding:10px 12px">' +
+        '<div class="kv"><span>' + esc(e.section || "") + '</span><b><a href="' + esc(e.url) + '" target="_blank" rel="noopener">github</a></b></div>' +
+        '<div style="font-weight:600;margin:4px 0">' + esc(e.name) + "</div>" +
+        '<div style="font-size:13px;color:var(--dim)">' + esc(e.description || "") + "</div>" +
+      "</div>"
+    ).join("");
+  } catch (e) {
+    $("secCatMeta").textContent = e.message;
+    host.innerHTML = "";
+  }
+}
+$("secCatSearch").onclick = loadHackerCatalog;
+$("secCatQ").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); loadHackerCatalog(); } });
+if ($("secToolsReload")) $("secToolsReload").onclick = loadHackerCatalog;
 
 async function runVideo() {
   const url = $("videoURL").value.trim();
@@ -2090,21 +2614,32 @@ function paintContext(c) {
   $("ctxUsed").textContent = fmtK(used);
   $("ctxTotal").textContent = fmtK(c.total);
   $("ctxHist").textContent = c.history_msgs != null ? c.history_msgs : "—";
-  $("ctxAuto").textContent = c.auto_compact_at != null ? c.auto_compact_at : "—";
+  $("ctxAuto").textContent = c.auto_compact_at_pct != null ? (c.auto_compact_at_pct + "%")
+    : (c.auto_compact_at != null ? c.auto_compact_at : "—");
 }
 function setChip(dotId, textId, state, text) {
   $(dotId).className = state;
   $(textId).textContent = text;
 }
 function paintActivity(a) {
-  if (!a) return;
+  if (!a) a = {};
   const gen = a.phase === "generating";
   $("orb").classList.toggle("busy", gen);
   $("orb").classList.remove("bad");
+  paintStopLive(gen);
   $("genPhase").textContent = gen ? ("работа" + (a.turns > 0 ? " · ход " + a.turns : "")) : "простаивает";
-  $("taskline").innerHTML = gen
-    ? '<span class="pill live">' + esc(a.label || "работаю") + '</span><span class="mono">' + (a.elapsed_sec || 0) + " с</span>"
-    : "";
+  let line = "";
+  if (gen) {
+    line = '<span class="pill live">' + esc(a.label || "работаю") + '</span><span class="mono">' + (a.elapsed_sec || 0) + " с</span>";
+  }
+  if (lastDL && lastDL.status === "running") {
+    const pct = lastDL.pct != null ? lastDL.pct.toFixed(0) : "?";
+    line += (line ? " " : "") + '<span class="pill live">⬇ ' + esc(lastDL.file || "модель") + " · " + pct + "%</span>";
+  }
+  if (lastSW && (lastSW.status === "stopping" || lastSW.status === "starting")) {
+    line += (line ? " " : "") + '<span class="pill live">🔄 ' + esc(lastSW.to || "мозг") + "</span>";
+  }
+  $("taskline").innerHTML = line;
   if (gen && a.live_tok_per_sec != null) {
     $("genRate").textContent = a.live_tok_per_sec;
     // per_turn = цифры обновляются раз в ход модели, а не раз в токен. Подписано честно:
@@ -2127,10 +2662,88 @@ const card = (title, value, sub) =>
   '<div class="panel card"><h3 class="lbl">' + title + '</h3><div class="v">' + value + "</div>" +
   (sub ? '<div class="s">' + sub + "</div>" : "") + "</div>";
 
+let lastDL = null, lastSW = null;
+
+function paintBrain(s) {
+  lastDL = s.download || null;
+  lastSW = s.brain_switch || null;
+  const run = s.running_model || "—";
+  const asg = s.model || "";
+  $("brainNow").textContent = run;
+  $("brainNow").title = run;
+  $("brainVision").textContent = s.brain_vision ? "вкл" : "нет";
+  let state = s.brain_ready ? "готов" : "грузится";
+  if (lastSW && (lastSW.status === "stopping" || lastSW.status === "starting")) {
+    state = lastSW.status === "stopping" ? "выгружаю" : "поднимаю";
+  }
+  $("brainSideState").textContent = state;
+
+  const dl = lastDL;
+  const box = $("dlBox");
+  if (dl && dl.status === "running") {
+    box.style.display = "block";
+    $("dlName").textContent = dl.file || "файл";
+    const pct = dl.pct != null ? dl.pct : 0;
+    $("dlFill").style.width = pct + "%";
+    const done = (dl.done || 0) / (1024*1024*1024);
+    const tot = (dl.total || 0) / (1024*1024*1024);
+    $("dlPct").textContent = pct.toFixed(0) + "% · " +
+      (done ? done.toFixed(1) : "0") + " / " + (tot ? tot.toFixed(1) : "?") + " ГБ";
+  } else {
+    box.style.display = "none";
+  }
+  const tabBox = $("modDLBox");
+  if (tabBox) {
+    if (dl && (dl.status === "running" || dl.status === "error")) {
+      tabBox.style.display = "block";
+      $("modDLLabel").textContent = dl.status === "error" ? "ошибка скачивания" : ("скачиваю " + (dl.file || ""));
+      $("modDLFill").style.width = ((dl.pct || 0)) + "%";
+      $("modDLPct").textContent = dl.status === "error" ? (dl.error || "ошибка") : ((dl.pct || 0).toFixed(0) + "%");
+      $("modDLMeta").textContent = dl.status === "error" ? "" : (fmtGB((dl.done || 0) / (1024*1024*1024)) + " из " + fmtGB((dl.total || 0) / (1024*1024*1024)));
+    } else {
+      tabBox.style.display = "none";
+    }
+  }
+
+  const sw = $("swBox");
+  if (lastSW && (lastSW.status === "stopping" || lastSW.status === "starting")) {
+    sw.style.display = "block";
+    sw.textContent = (lastSW.status === "stopping" ? "Выгружаю " : "Поднимаю ") +
+      (lastSW.to || "модель") + " — 1–5 мин, чат подождёт.";
+  } else if (lastSW && lastSW.status === "error") {
+    sw.style.display = "block";
+    sw.textContent = "Переключение не вышло: " + (lastSW.error || "ошибка");
+  } else if (s.model_pending) {
+    sw.style.display = "block";
+    sw.textContent = "В ini уже «" + asg + "», в VRAM ещё «" + run + "».";
+  } else {
+    sw.style.display = "none";
+  }
+
+  const list = s.local_models || [];
+  const host = $("sideModels");
+  if (!list.length) {
+    host.innerHTML = '<div class="kv"><span>пока пусто</span></div>';
+    return;
+  }
+  host.innerHTML = list.map(m => {
+    const cls = m.running ? "sidemod on" : (m.active && !m.running ? "sidemod pending" : "sidemod");
+    const mark = m.running ? "сейчас" : (m.active ? "назначена" : (m.vision ? "зрение" : ""));
+    return '<div class="' + cls + '"><button type="button" data-switch="' + esc(m.path) + '"' +
+      (m.running ? " disabled" : "") + ' title="' + esc(m.path) + '">' +
+      '<span class="nm">' + esc(m.name) + "</span>" +
+      '<span class="meta">' + (m.size_gb ? fmtGB(m.size_gb) : "") +
+      (m.quant ? " · " + esc(m.quant) : "") +
+      (mark ? " · " + mark : "") +
+      "</span></button></div>";
+  }).join("");
+}
+
 async function refreshStatus() {
   try {
     const s = await (await fetch("/api/status")).json();
     if (s.activity && s.activity.phase === "generating") liveTokens = s.activity.live_tokens || liveTokens;
+    paintBrain(s);
     paintActivity(s.activity);
     paintContext(s.context);
     setChip("dotBrain", "chipBrain", s.brain_ready ? "ok" : "warn", s.brain_ready ? "мозг готов" : "мозг грузится");
@@ -2159,7 +2772,7 @@ async function refreshStatus() {
             (s.context.pct != null ? " · " + s.context.pct + "%" : "")
           : "неизвестен",
         s.context ? "история: " + (s.context.history_msgs || 0) + " реплик ≈ " + (s.context.history_tokens || 0) +
-          " ток. · автосжатие на " + (s.context.auto_compact_at || "?") : "модель ещё грузится") +
+          " ток. · автосжатие с " + (s.context.auto_compact_at_pct != null ? s.context.auto_compact_at_pct + "%" : (s.context.auto_compact_at || "?")) : "модель ещё грузится") +
       card("Руки", s.hands ? (s.hands.mode === "full" ? "<b>Длинные</b>" : "<b>Короткие</b>") : "—",
         s.hands && s.hands.mode === "full"
           ? "весь ПК без подтверждений; ядерное переспрашивается один раз"
@@ -2173,7 +2786,7 @@ async function refreshStatus() {
       '<div class="panel card" style="grid-column:1/-1"><h3 class="lbl">Доступ</h3>' +
         '<div class="s">Панель отвечает только этому компьютеру (127.0.0.1). Те же возможности есть в Telegram: ' +
         "<code>/analyze BTC</code>, <code>/chart</code>, <code>/agent</code>, <code>/browser</code>, " +
-        "<code>/download</code>, <code>/compact</code>, <code>/hands</code>, " +
+        "<code>/download</code>, <code>/stress</code>, <code>/compact</code>, <code>/hands</code>, " +
         "<code>/hw</code>, <code>/models</code>, <code>/tts</code>, <code>/speak</code>.</div></div>";
   } catch (e) {
     setChip("dotBrain", "chipBrain", "bad", "бот не отвечает");
@@ -2207,8 +2820,8 @@ async function restoreHistory() {
         "- перетащи файл в окно или нажми скрепку\n" +
         "- зажми микрофон и скажи голосом\n" +
         "- вкладка **Разбор** — уровни, ATR и сценарии лонга и шорта по дневкам\n" +
-        "- вкладка **Модели** — тест железа и каталог GGUF\n" +
-        "- кнопка **Озвучить** под ответом — SuperTonic читает вслух (тумблер в шапке: всегда / по запросу)"));
+        "- вкладка **Модели** и правая колонка — прогресс скачивания и переключение GGUF\n" +
+        "- кнопка **Озвучить** под ответом — Qwen3-TTS читает вслух (тумблер в шапке: всегда / по запросу)"));
     }
     if (j.context) paintContext(j.context);
     if (j.pending) {
@@ -2381,6 +2994,24 @@ function paintMod(m) {
 
 $("modList").addEventListener("click", onModClick);
 $("modLocal").addEventListener("click", onModClick);
+$("sideModels").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-switch]");
+  if (!b || b.disabled) return;
+  b.disabled = true;
+  try {
+    const j = await (await fetch("/api/models/assign", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: b.dataset.switch, restart: true })
+    })).json();
+    toast(j.error || j.text || "переключаю", j.error ? "bad" : "");
+  } catch (err) { toast(err.message, "bad"); }
+});
+$("dlCancel").onclick = async () => {
+  try {
+    await fetch("/api/models/cancel", { method: "POST" });
+    toast("скачивание останавливаю");
+  } catch (err) { toast(err.message, "bad"); }
+};
 async function onModClick(e) {
   const b = e.target.closest("button");
   if (!b) return;
@@ -2425,7 +3056,8 @@ function watchDownload() {
       } else {
         clearInterval(hwTimer); hwTimer = null;
         if (j.status === "done") {
-          toast(j.assigned ? "скачано и прописано в settings.ini" : "скачано");
+          toast(j.switch_error ? ("⚠ " + j.switch_error) : (j.assigned ? "скачано, переключаю мозг" : "скачано"),
+            j.switch_error ? "warn" : "");
           loadModels();
         } else if (j.status === "error") toast(j.error || "ошибка скачивания", "bad");
         else if (j.status === "canceled") toast("скачивание остановлено", "warn");

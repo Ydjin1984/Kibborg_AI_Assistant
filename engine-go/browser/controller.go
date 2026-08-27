@@ -45,6 +45,9 @@ func (s *Session) extractJSON(pageURL, js string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := assertPublicTabURL(rctx); err != nil {
+		return "", err
+	}
 	return out, nil
 }
 
@@ -70,7 +73,15 @@ func (s *Session) OpenURL(rawURL string, newTab bool) (string, error) {
 	if err := s.run(chromedp.Navigate(rawURL), chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
 		return "", err
 	}
-	return s.CurrentURL()
+	cur, err := s.CurrentURL()
+	if err != nil {
+		return "", err
+	}
+	if _, err := safeRemoteURL(cur); err != nil {
+		_ = s.run(chromedp.Navigate("about:blank"))
+		return "", fmt.Errorf("редирект на внутренний адрес заблокирован: %s", cur)
+	}
+	return cur, nil
 }
 
 // openNewTab creates a fresh tab, wires capture onto it, navigates, and makes it current.
@@ -100,7 +111,26 @@ func (s *Session) openNewTab(rawURL string) (string, error) {
 	lctx, lcancel := context.WithTimeout(ctx, 5*time.Second)
 	defer lcancel()
 	_ = chromedp.Run(lctx, chromedp.Location(&url))
+	if _, err := safeRemoteURL(url); err != nil {
+		_ = chromedp.Run(lctx, chromedp.Navigate("about:blank"))
+		cancel()
+		s.detachPage()
+		return "", fmt.Errorf("редирект на внутренний адрес заблокирован: %s", url)
+	}
 	return url, nil
+}
+
+// assertPublicTabURL refuses pages that landed on loopback/private hosts after redirects.
+func assertPublicTabURL(ctx context.Context) error {
+	var loc string
+	if err := chromedp.Run(ctx, chromedp.Location(&loc)); err != nil {
+		return err
+	}
+	if _, err := safeRemoteURL(loc); err != nil {
+		_ = chromedp.Run(ctx, chromedp.Navigate("about:blank"))
+		return fmt.Errorf("редирект на внутренний адрес заблокирован: %s", loc)
+	}
+	return nil
 }
 
 // ClosePage closes a tab by index (from list_tabs) or, when index<0, the current tab. After

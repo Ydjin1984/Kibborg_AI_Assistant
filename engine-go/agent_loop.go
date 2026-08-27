@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"kibborg/engine/browser"
@@ -22,8 +23,8 @@ type agentRequest struct {
 	baseMsgs []map[string]any // history + memory blocks (system first)
 	input    string
 	// status reports progress to the human («ищу», «читаю», «жду подтверждения»). CoT is
-	// never streamed (§6) — only step statuses.
-	status func(string)
+	// never streamed (§6) — only step statuses (plus structured phase/tool for Web).
+	status StatusFn
 	// memSummary is the long-term memory digest handed to the dispatcher (§4.1).
 	memSummary string
 	// hintPacks is what a slash command suggests (§5: «слэш → подсказка пака, не обход
@@ -65,21 +66,34 @@ type loopState struct {
 	packs   []string
 	tools   []browser.ToolSpec
 	plan    dispatchPlan
-	status  func(string)
+	status  StatusFn
 	didRead bool
 	didSrch bool
 	// usedTool: did this task call ANY real tool? request_pack does not count — asking for
 	// more hands is not using them.
 	usedTool bool
+	// wroteSecReport: write_security_report succeeded this task (secops closing gate).
+	wroteSecReport bool
+	secReportPath  string // last written MD path (for empty-final fallback)
+	secReportURL   string // /api/files/… relative
+	secReportNudge int    // how many times we already prodded for the MD report
 	// seenActs — короткие ярлыки уже сделанного (запрос, URL, файл), чтобы статус
 	// «обдумываю» называл, *что* ушло в модель, а не просто «думаю».
 	seenActs []string
 }
 
-func (ls *loopState) note(text string) {
-	if ls.status != nil {
-		ls.status(text)
+func (ls *loopState) noteBrain(text string) {
+	ls.emitStatus(statusBrain(text))
+}
+
+func (ls *loopState) emitStatus(u StatusUpdate) {
+	if ls == nil || ls.status == nil {
+		return
 	}
+	if strings.TrimSpace(u.Text) == "" {
+		return
+	}
+	ls.status(u)
 }
 
 // runLayeredAgent is the whole pipeline for one request: dispatcher → packs → loop → answer.
@@ -113,7 +127,7 @@ func runLayeredAgent(req agentRequest) agentResult {
 	// of hanging silently (§4: «Параллельный канал: минимум "занят, в очереди"»).
 	if !browserTaskMu.TryLock() {
 		if req.status != nil {
-			req.status("⏳ Занят другой задачей — встал в очередь.")
+			req.status(statusInfo("⏳ Занят другой задачей — встал в очередь."))
 		}
 		browserTaskMu.Lock()
 	}
@@ -161,9 +175,9 @@ func runLayeredAgent(req agentRequest) agentResult {
 	if req.status != nil {
 		q := oneLine(req.input)
 		if q != "" {
-			req.status("🧭 Разбираю запрос: «" + clipStatus(q, 110) + "»")
+			req.status(statusBrain("🧭 разбираю запрос: «" + clipStatus(q, 110) + "»"))
 		} else {
-			req.status("🧭 Разбираю запрос…")
+			req.status(statusBrain("🧭 разбираю запрос…"))
 		}
 	}
 	plan := runDispatcher(req.cfg, t, req.baseMsgs, req.memSummary, req.hintPacks)
@@ -174,10 +188,10 @@ func runLayeredAgent(req agentRequest) agentResult {
 
 	if req.status != nil {
 		if ribbon := describePlan(plan.Plan); ribbon != "" {
-			req.status(ribbon)
+			req.status(statusInfo(ribbon))
 		}
 		if plan.Confirm {
-			req.status("ℹ️ Возможно, попрошу подтверждение на одном из шагов.")
+			req.status(statusInfo("ℹ️ Возможно, попрошу подтверждение на одном из шагов."))
 		}
 	}
 
@@ -209,25 +223,37 @@ func runExecutorLoop(ls *loopState, unlockShared func()) agentResult {
 
 	var lastText string
 	stop, refused := false, false
+	badArgsRetries := 0
 
-	for t.Step < maxAgentSteps && !stop {
+	budget := stepBudget(ls.packs)
+	for t.Step < budget && !stop {
 		if res, done := checkInterrupted(t); done {
 			return res
 		}
 		step := t.Step
 		t.Step++
 
-		if estimateAgentChars(ls.msgs, ls.tools) > agentSoftBudgetChars {
+		if estimateAgentChars(ls.msgs, ls.tools) > agentSoftBudget(ls.cfg) {
 			log.Printf("[AGENT] %s: бюджет промпта превышен на шаге %d — сжимаю", t.ID, step)
 			ls.msgs = shrinkAgentMsgs(ls.msgs, ls.sys, t.Input, step > 0)
 		}
 
-		ls.note(ls.thinkLine())
+		ls.noteBrain(ls.thinkLine())
 		msg, stats, err := llmChatTools(t.Context(), ls.cfg.BrainPort, ls.msgs, ls.tools, 0.3)
 		if err != nil && isContextBad(err) {
 			log.Printf("[AGENT] %s: контекст/кэш на шаге %d: %v — сжимаю и повторяю", t.ID, step, err)
 			ls.msgs = shrinkAgentMsgs(ls.msgs, ls.sys, t.Input, true)
 			msg, stats, err = llmChatTools(t.Context(), ls.cfg.BrainPort, ls.msgs, ls.tools, 0.3)
+		}
+		// Truncated tool-call JSON (long curl+JWT) makes llama-server return HTTP 500.
+		// Sanitize any broken Arguments already in history and nudge — do not kill the task.
+		if err != nil && isBadToolCallArgs(err) && badArgsRetries < 2 {
+			badArgsRetries++
+			log.Printf("[AGENT] %s: сломанный JSON tool-call на шаге %d (попытка %d): %s",
+				t.ID, step, badArgsRetries, scrubSecrets(err.Error()))
+			sanitizeMsgsToolArgs(ls.msgs)
+			ls.msgs = append(ls.msgs, map[string]any{"role": "user", "content": badToolArgsNudge})
+			continue
 		}
 		// §3.2: the number to watch is prompt_ms of the FIRST executor turn — that is the
 		// once-per-task re-processing of the system prompt, not the dispatcher's own prompt.
@@ -241,11 +267,11 @@ func runExecutorLoop(ls *loopState, unlockShared func()) agentResult {
 			if res, done := checkInterrupted(t); done {
 				return res
 			}
-			log.Printf("[AGENT] %s: ошибка модели: %v", t.ID, err)
-			return finishTask(ls, TaskFailed, "❌ Ошибка модели: "+err.Error())
+			log.Printf("[AGENT] %s: ошибка модели: %v", t.ID, scrubSecrets(err.Error()))
+			return finishTask(ls, TaskFailed, "❌ Ошибка модели: "+scrubSecrets(err.Error()))
 		}
 
-		calls := validToolCalls(msg.ToolCalls)
+		calls := sanitizeToolCalls(validToolCalls(msg.ToolCalls))
 		if len(calls) == 0 {
 			// The model writes ~1 call in 3 as prose instead of tool_calls. Recover it and run
 			// it — through the same gate as any other call (see prose_calls.go).
@@ -277,7 +303,7 @@ func runExecutorLoop(ls *loopState, unlockShared func()) agentResult {
 				continue
 			}
 			lastText = msg.Content
-			ls.note("✍️ Формулирую ответ…")
+			ls.noteBrain("✍️ формулирую ответ…")
 			break
 		}
 
@@ -306,11 +332,11 @@ func runExecutorLoop(ls *loopState, unlockShared func()) agentResult {
 		return finishTask(ls, TaskFailed, lastText)
 	}
 	if strings.TrimSpace(lastText) == "" {
-		if t.Step >= maxAgentSteps {
+		if t.Step >= budget {
 			if len(ls.seenActs) > 0 {
-				ls.note("🧮 Пишу итог по: " + strings.Join(ls.seenActs, " · "))
+				ls.noteBrain("🧮 пишу итог по: " + strings.Join(ls.seenActs, " · "))
 			} else {
-				ls.note("🧮 Шаги закончились — подвожу итог.")
+				ls.noteBrain("🧮 шаги закончились — подвожу итог.")
 			}
 		}
 		lastText = ls.summarize()
@@ -360,7 +386,11 @@ type turnOutcome struct {
 	finalText string
 }
 
-// runTurn executes the tool calls of ONE assistant message, in order.
+// runTurn executes the tool calls of ONE assistant message.
+//
+// Read-only independent tools (probe/download/http_get/search…) from one model turn run in
+// parallel — that is the cheap speedup for pentest evidence without a second LLM. Mutators
+// and browser.act stay serial. Guard/confirm still decide BEFORE any parallel work.
 //
 // The hard invariant (§6.3 п. 5): every tool_call_id gets a `tool` reply. If call #2 goes to
 // a confirmation and #3 is left unanswered, the next llama-server request returns 400 — so
@@ -369,30 +399,217 @@ type turnOutcome struct {
 func (ls *loopState) runTurn(calls []toolCall) turnOutcome {
 	var out turnOutcome
 	deferring := false
-	for _, tc := range calls {
+	i := 0
+	for i < len(calls) {
 		if deferring {
-			ls.appendToolMsg(tc, deferredResult())
+			ls.appendToolMsg(calls[i], deferredResult())
+			i++
 			continue
 		}
-		res := ls.executeGuarded(tc)
-		switch res.control {
-		case controlPause:
-			// The paused call gets no tool message yet — resumeConfirmed writes it.
-			deferring = true
-			out.paused = true
-			continue
-		case controlStop:
-			deferring = true
-			out.stopped = true
-			out.finalText = res.finalText
-			switch res.result.Status {
-			case StatusBlocked, StatusDenied:
-				out.refused = true
+		// Collect a consecutive batch of parallel-safe tools (capped — live: 20×probe_url
+		// in one turn blew past ToolOK quota because all saw count=0 before any bump).
+		batch := []toolCall{calls[i]}
+		j := i + 1
+		if toolParallelOK(calls[i].Function.Name) {
+			for j < len(calls) && toolParallelOK(calls[j].Function.Name) && len(batch) < maxParallelTools {
+				batch = append(batch, calls[j])
+				j++
 			}
 		}
-		ls.appendToolMsg(tc, res.result)
+		if len(batch) == 1 {
+			res := ls.executeGuarded(batch[0])
+			switch res.control {
+			case controlPause:
+				deferring = true
+				out.paused = true
+				i = j
+				continue
+			case controlStop:
+				deferring = true
+				out.stopped = true
+				out.finalText = res.finalText
+				switch res.result.Status {
+				case StatusBlocked, StatusDenied:
+					out.refused = true
+				}
+				ls.appendToolMsg(batch[0], res.result)
+				i = j
+				continue
+			}
+			ls.appendToolMsg(batch[0], res.result)
+			i = j
+			continue
+		}
+		// Parallel batch: pre-check guard serially; only ActionAllow runs together.
+		type gated struct {
+			tc  toolCall
+			out toolOutcome
+			run bool // true → execute tool body in parallel
+		}
+		gatedCalls := make([]gated, len(batch))
+		plannedOK := map[string]int{} // квота внутри батча: все 20 probe видели ToolOK=0
+		for k, tc := range batch {
+			name := tc.Function.Name
+			raw := strings.TrimSpace(tc.Function.Arguments)
+			args, err := parseToolArgs(raw)
+			if err != nil {
+				gatedCalls[k] = gated{tc: tc, out: toolOutcome{result: failResult(err.Error(), err)}}
+				continue
+			}
+			ls.task.noteTool(name)
+			if name == "request_pack" {
+				// request_pack is never in parallelOK, but keep safe.
+				gatedCalls[k] = gated{tc: tc, out: ls.executeGuarded(tc)}
+				continue
+			}
+			decision := guardToolCall(ls.task.Actor, name, args)
+			fingerprint := toolFingerprint(name, args)
+			switch decision.Action {
+			case ActionHardBlock, ActionDeny, ActionAsk:
+				// Fall back to the full serial path for this one call — keeps pause/deny logic.
+				gatedCalls[k] = gated{tc: tc, out: ls.executeGuarded(tc)}
+			default:
+				if n := ls.task.seenOKCount(fingerprint); n >= 1 {
+					line := "⏭ Пропуск повтора: " + toolStatusDetail(name, args)
+					ls.emitStatus(statusResult(name, toolArgsBrief(args), line))
+					msg := "Повтор того же вызова пропущен — результат уже есть в контексте этой задачи."
+					gatedCalls[k] = gated{tc: tc, out: toolOutcome{result: okResult(msg, nil)}}
+					continue
+				}
+				used := ls.task.toolOKCount(name) + plannedOK[name]
+				if toolHasOKQuota(name) && used >= toolOKQuota {
+					line := "⏭ Квота `" + name + "`"
+					ls.emitStatus(statusResult(name, toolArgsBrief(args), line))
+					msg := "Инструмент `" + name + "` уже исчерпал квоту успешных вызовов в этой задаче " +
+						"(в т.ч. в этом параллельном батче). Дальше — login/download JSON или write_security_report."
+					gatedCalls[k] = gated{tc: tc, out: toolOutcome{result: okResult(msg, nil)}}
+					continue
+				}
+				if toolHasOKQuota(name) {
+					plannedOK[name]++
+				}
+				gatedCalls[k] = gated{tc: tc, run: true}
+			}
+		}
+		// If any non-run item paused/stopped, execute remaining runs serially after handling.
+		hasControl := false
+		for _, g := range gatedCalls {
+			if !g.run && (g.out.control == controlPause || g.out.control == controlStop) {
+				hasControl = true
+				break
+			}
+		}
+		if hasControl {
+			for k := range gatedCalls {
+				g := &gatedCalls[k]
+				if g.run {
+					g.out = ls.executeGuarded(g.tc)
+				}
+				switch g.out.control {
+				case controlPause:
+					deferring = true
+					out.paused = true
+				case controlStop:
+					deferring = true
+					out.stopped = true
+					out.finalText = g.out.finalText
+					if g.out.result.Status == StatusBlocked || g.out.result.Status == StatusDenied {
+						out.refused = true
+					}
+					ls.appendToolMsg(g.tc, g.out.result)
+				default:
+					ls.appendToolMsg(g.tc, g.out.result)
+				}
+				if deferring {
+					break
+				}
+			}
+			i = j
+			continue
+		}
+
+		var wg sync.WaitGroup
+		results := make([]toolOutcome, len(gatedCalls))
+		nRun := 0
+		for _, g := range gatedCalls {
+			if g.run {
+				nRun++
+			}
+		}
+		ls.emitStatus(statusInfo(fmt.Sprintf("⚡ Параллельно %d инструментов…", nRun)))
+		var actMu sync.Mutex // rememberAct / status text order from workers
+		for k, g := range gatedCalls {
+			if !g.run {
+				results[k] = g.out
+				continue
+			}
+			wg.Add(1)
+			go func(k int, tc toolCall) {
+				defer wg.Done()
+				name := tc.Function.Name
+				args, _ := parseToolArgs(strings.TrimSpace(tc.Function.Arguments))
+				brief := toolArgsBrief(args)
+				actMu.Lock()
+				ls.emitStatus(statusTool(name, brief, toolStatusDetail(name, args)))
+				if hint := toolActHint(name, args); hint != "" {
+					ls.rememberAct(hint)
+				}
+				actMu.Unlock()
+				res := ls.runToolQuiet(tc, name, args) // status already emitted
+				if res.Status == StatusOK {
+					ls.task.bumpSeenOK(toolFingerprint(name, args))
+					ls.task.bumpToolOK(name)
+				}
+				actMu.Lock()
+				ls.emitToolResult(name, brief, args, res)
+				actMu.Unlock()
+				results[k] = toolOutcome{result: res}
+			}(k, g.tc)
+		}
+		wg.Wait()
+		for k, g := range gatedCalls {
+			res := results[k]
+			if res.control == controlStop {
+				deferring = true
+				out.stopped = true
+				out.finalText = res.finalText
+			}
+			if g.run || res.result.Status != "" || res.result.Text != "" {
+				ls.appendToolMsg(g.tc, res.result)
+			}
+		}
+		i = j
 	}
 	return out
+}
+
+// maxParallelTools — сколько read-only вызовов запускать сразу. 20×probe в одном ходе
+// обходили ToolOK-квоту и засоряли ленту.
+const maxParallelTools = 6
+
+// toolParallelOK — только инструменты со СВОИМ HTTP/диском, без общего Chrome CDP.
+// web_search/read_url/browser.* остаются serial: одна Session на процесс.
+func toolParallelOK(name string) bool {
+	switch name {
+	case "probe_url", "download_url", "http_get",
+		"github_search", "youtube_transcript", "search_hacker_tools",
+		"analyze_log", "scan_text", "audit_file",
+		"read_file", "list_dir", "file_info", "media_info":
+		return true
+	default:
+		return false
+	}
+}
+
+// isPostReportNoise — после write_security_report модель уходила гуглить OWASP вместо итога.
+func isPostReportNoise(name string) bool {
+	switch name {
+	case "web_search", "semantic_search", "read_url", "http_get", "github_search",
+		"probe_url", "download_url", "search_hacker_tools", "open_url":
+		return true
+	default:
+		return false
+	}
 }
 
 // checkInterrupted turns a cancelled/expired context into the user-visible outcome (§4.2).
@@ -425,7 +642,19 @@ func finishTask(ls *loopState, status TaskStatus, text string) agentResult {
 
 	text = strings.TrimSpace(stripThink(text))
 	if text == "" {
-		text = "Готово, но модель не вернула текстовый итог. Повтори запрос конкретнее."
+		// Живой пентест: write_security_report уже записал MD, а модель ушла в OWASP и
+		// вернула пустой финал — пользователь видел «итог не вернула» при готовом отчёте.
+		if ls != nil && ls.wroteSecReport {
+			text = "🛡 Проверка завершена — MD-отчёт записан."
+			if ls.secReportPath != "" {
+				text += "\nФайл: `" + ls.secReportPath + "`"
+			}
+			if ls.secReportURL != "" {
+				text += "\nСкачать: `/api/files/" + ls.secReportURL + "`"
+			}
+		} else {
+			text = "Готово, но модель не вернула текстовый итог. Повтори запрос конкретнее."
+		}
 	}
 	if s := strings.TrimSpace(ls.plan.Summary); s != "" && status == TaskDone {
 		text = s + "\n\n" + text
@@ -450,22 +679,25 @@ func (ls *loopState) park(unlockShared func()) agentResult {
 	if unlockShared != nil {
 		unlockShared()
 	}
+	// Waiting on a human must not burn TaskTimeout — swap to a cancel-only context.
+	t.armWaitContext()
 	p := t.Pending
 	rs := &resumeState{
-		task:    t,
-		cfg:     ls.cfg,
-		pending: p,
-		msgs:    compactToolMessages(ls.msgs),
-		sys:     ls.sys,
-		packs:   ls.packs,
-		tools:   ls.tools,
-		didRead: ls.didRead,
-		didSrch: ls.didSrch,
+		task:     t,
+		cfg:      ls.cfg,
+		pending:  p,
+		msgs:     compactToolMessages(ls.msgs),
+		sys:      ls.sys,
+		packs:    ls.packs,
+		tools:    ls.tools,
+		didRead:  ls.didRead,
+		didSrch:  ls.didSrch,
+		usedTool: ls.usedTool,
 	}
 	if prev := savePending(rs); prev != nil && prev.ID != p.ID {
 		log.Printf("[PENDING] %s заменил %s", p.ID, prev.ID)
 	}
-	ls.note("⏸ Жду подтверждения — руки свободны, можно писать /stop или /hands.")
+	ls.emitStatus(statusInfo("⏸ Жду подтверждения — руки свободны, можно писать /stop или /hands."))
 	return agentResult{
 		Text:    p.question(),
 		Status:  TaskWaitingConfirm,
@@ -477,18 +709,20 @@ func (ls *loopState) park(unlockShared func()) agentResult {
 // summarize is the no-tools closing pass when the model ended without prose.
 func (ls *loopState) summarize() string {
 	sumMsgs := slimForSummary(ls.msgs, ls.sys)
-	sumMsgs = append(sumMsgs, map[string]any{
-		"role":    "user",
-		"content": "Подведи краткий итог по-русски на основе собранных данных. Укажи источники/URL. Ничего не выдумывай.",
-	})
-	if estimateAgentChars(sumMsgs, nil) > agentSoftBudgetChars {
-		sumMsgs = []map[string]any{
-			{"role": "system", "content": ls.sys},
-			{"role": "user", "content": "Кратко: что удалось собрать по задаче «" +
-				capAgentText(ls.task.Input, 200) + "». Если данных мало — скажи честно."},
-		}
+	budget := agentSoftBudget(ls.cfg)
+	// Trim oldest non-system notes until we fit — NEVER replace with an empty
+	// «если данных мало — скажи честно»: на живом пентесте это давало пустой ответ
+	// после десятков probe_url, хотя доказательства уже были в контексте.
+	for estimateAgentChars(sumMsgs, nil) > budget && len(sumMsgs) > 2 {
+		sumMsgs = append(sumMsgs[:1], sumMsgs[2:]...)
 	}
-	ls.note("🧠 Собираю ответ из того, что нашёл…")
+	sumMsgs = append(sumMsgs, map[string]any{
+		"role": "user",
+		"content": "Подведи полный итог по-русски на основе собранных данных выше. " +
+			"Укажи источники/URL, что нашёл, как воспроизвести. Ничего не выдумывай. " +
+			"Если в данных есть PII/эндпоинты — перечисли их как доказательства.",
+	})
+	ls.noteBrain("🧠 собираю ответ из того, что нашёл…")
 	out, _, err := llmChatTools(ls.task.Context(), ls.cfg.BrainPort, sumMsgs, nil, 0.3)
 	if err != nil {
 		log.Printf("[AGENT] %s: итоговый проход не удался: %v", ls.task.ID, err)
@@ -509,9 +743,9 @@ func (ls *loopState) appendToolMsg(tc toolCall, res ToolResult) {
 	})
 	ls.task.AddStep(CompactResult{
 		Tool:   name,
-		Args:   capAgentText(tc.Function.Arguments, 200),
+		Args:   scrubSecrets(capAgentText(tc.Function.Arguments, 200)),
 		Status: string(res.Status),
-		Text:   capAgentText(res.Text, 400),
+		Text:   scrubSecrets(capAgentText(res.Text, 400)),
 	})
 	ls.task.AddArtifacts(res.Artifacts)
 	// Провалившееся ДЕЙСТВИЕ фиксируется здесь, а не в тексте для модели: текст она может
@@ -532,6 +766,16 @@ func (ls *loopState) appendToolMsg(tc toolCall, res ToolResult) {
 		}
 	case "read_url", "http_get", "open_url", "get_text":
 		ls.didRead = true
+	case "write_security_report":
+		if res.Status == StatusOK {
+			ls.wroteSecReport = true
+			if len(res.Artifacts) > 0 {
+				ls.secReportPath = res.Artifacts[0]
+			}
+			if rel := apiFilesRelFromText(res.Text); rel != "" {
+				ls.secReportURL = rel
+			}
+		}
 	}
 	if name != "request_pack" {
 		ls.usedTool = true
@@ -563,11 +807,9 @@ func (ls *loopState) executeGuarded(tc toolCall) toolOutcome {
 	name := tc.Function.Name
 	raw := strings.TrimSpace(tc.Function.Arguments)
 
-	args := map[string]any{}
-	if raw != "" && raw != "null" {
-		if err := json.Unmarshal([]byte(raw), &args); err != nil {
-			return toolOutcome{result: failResult("не разобрал JSON аргументов: "+err.Error(), err)}
-		}
+	args, err := parseToolArgs(raw)
+	if err != nil {
+		return toolOutcome{result: failResult(err.Error(), err)}
 	}
 	t.noteTool(name)
 
@@ -579,7 +821,16 @@ func (ls *loopState) executeGuarded(tc toolCall) toolOutcome {
 			ls.packs = append(ls.packs, esc.Added)
 			ls.tools = assemblePackTools(ls.sess, ls.packs)
 			ls.task.Packs = ls.packs
-			ls.note("🧰 Подключил инструменты: " + esc.Added)
+			// Rebuild executor prompt so pack-specific rules (systemPackRules, media, …)
+			// appear after escalation — schemas alone are not enough.
+			ls.plan.Packs = ls.packs
+			ls.sys = executorSystemPrompt(ls.plan, t.Actor)
+			if len(ls.msgs) > 0 {
+				if role, _ := ls.msgs[0]["role"].(string); role == "system" {
+					ls.msgs[0]["content"] = ls.sys
+				}
+			}
+			ls.emitStatus(statusInfo("🧰 Подключил инструменты: " + esc.Added))
 		}
 		return toolOutcome{result: esc.Result}
 	}
@@ -590,7 +841,7 @@ func (ls *loopState) executeGuarded(tc toolCall) toolOutcome {
 	switch decision.Action {
 	case ActionHardBlock:
 		logHands(t, name, raw, decision, "blocked", string(StatusBlocked), "")
-		ls.note("⛔ Заблокировал: " + decision.Reason)
+		ls.emitStatus(statusInfo("⛔ Заблокировал: " + decision.Reason))
 		return toolOutcome{
 			result:    blockedResult(decision.Reason),
 			control:   controlStop,
@@ -636,7 +887,37 @@ func (ls *loopState) executeGuarded(tc toolCall) toolOutcome {
 		return toolOutcome{result: ToolResult{Status: StatusDeferred}, control: controlPause}
 	}
 
-	// allow
+	// После MD-отчёта не уходим гуглить OWASP — сразу итог человеку.
+	if ls.wroteSecReport && isPostReportNoise(name) {
+		line := "⏭ После отчёта: `" + name + "` не нужен"
+		ls.emitStatus(statusResult(name, toolArgsBrief(args), line))
+		msg := "MD-отчёт уже записан"
+		if ls.secReportURL != "" {
+			msg += " (`/api/files/" + ls.secReportURL + "`)"
+		}
+		msg += ". НЕ вызывай поиск/пробы/скачивания. Дай человеку короткий итог со ссылкой на отчёт — без tool_calls."
+		return toolOutcome{result: okResult(msg, nil)}
+	}
+
+	// allow — но тот же успешный вызов второй раз не крутим (probe_url-петли на пентесте).
+	if n := t.seenOKCount(fingerprint); n >= 1 {
+		line := "⏭ Пропуск повтора: " + toolStatusDetail(name, args)
+		ls.emitStatus(statusResult(name, toolArgsBrief(args), line))
+		msg := "Повтор того же вызова пропущен — результат уже есть в контексте этой задачи.\n" +
+			"НЕ вызывай `" + name + "` с теми же аргументами снова.\n" +
+			"Следующий шаг: для тел API/файлов — download_url или http_get; финал secops — write_security_report."
+		return toolOutcome{result: okResult(msg, nil)}
+	}
+	// Квота по имени tool: staff/students/roles ×8 и run_command×10 сжигали весь budget.
+	if toolHasOKQuota(name) && t.toolOKCount(name) >= toolOKQuota {
+		line := "⏭ Квота `" + name + "`: уже " + itoa(toolOKQuota) + "+ успешных в этой задаче"
+		ls.emitStatus(statusResult(name, toolArgsBrief(args), line))
+		msg := "Инструмент `" + name + "` уже вызывался успешно " + itoa(toolOKQuota) +
+			"+ раз в этой задаче — хватит. НЕ долби его снова.\n" +
+			"Сделай следующий РАЗНЫЙ шаг или вызови write_security_report с тем, что уже собрано."
+		return toolOutcome{result: okResult(msg, nil)}
+	}
+
 	res := ls.runTool(tc, name, args)
 	exitText := ""
 	if res.Err != nil {
@@ -647,6 +928,9 @@ func (ls *loopState) executeGuarded(tc toolCall) toolOutcome {
 	switch res.Status {
 	case StatusCancelled:
 		return toolOutcome{result: res, control: controlStop}
+	case StatusOK:
+		t.bumpSeenOK(fingerprint)
+		t.bumpToolOK(name)
 	case StatusFailed, StatusTimeout:
 		repeated, deadTool := t.bumpFail(fingerprint, name)
 		if repeated {
@@ -670,12 +954,38 @@ func (ls *loopState) executeGuarded(tc toolCall) toolOutcome {
 // runTool executes an allowed call: main-package tools first, then the browser session.
 // The tool context is clamped to what is left of the task budget (§4.2 hierarchy).
 func (ls *loopState) runTool(tc toolCall, name string, args map[string]any) ToolResult {
-	t := ls.task
-	ls.note(toolStatusLine(name, args))
+	brief := toolArgsBrief(args)
+	// Без ` · tool` в тексте: Web рисует badge имени, иначе «probe_url probe_url → …».
+	ls.emitStatus(statusTool(name, brief, toolStatusDetail(name, args)))
 	if hint := toolActHint(name, args); hint != "" {
 		ls.rememberAct(hint)
 	}
+	res := ls.runToolQuiet(tc, name, args)
+	ls.emitToolResult(name, brief, args, res)
+	return res
+}
 
+func (ls *loopState) emitToolResult(name, brief string, args map[string]any, res ToolResult) {
+	extra := toolResultLine(name, args, res)
+	if extra == "" && strings.TrimSpace(res.Text) == "" {
+		return
+	}
+	summary := extra
+	if summary == "" {
+		summary = "✔️ готово"
+	}
+	body := res.Text
+	if res.Status == StatusFailed || res.Status == StatusTimeout {
+		if body == "" && res.Err != nil {
+			body = res.Err.Error()
+		}
+	}
+	ls.emitStatus(statusResultBody(name, brief, summary, body))
+}
+
+// runToolQuiet executes without status lines (parallel batch already emitted its own).
+func (ls *loopState) runToolQuiet(tc toolCall, name string, args map[string]any) ToolResult {
+	t := ls.task
 	var res ToolResult
 	if localToolNames[name] {
 		if local, ok := dispatchLocalTool(t, ls.cfg, name, tc.ID, args); ok {
@@ -690,9 +1000,6 @@ func (ls *loopState) runTool(tc toolCall, name string, args map[string]any) Tool
 		text, err := ls.sess.Dispatch(toolCtx, name, args)
 		res = classifyToolErr(t.Context(), text, err)
 		res.Text = capAgentText(res.Text, agentMaxToolChars)
-	}
-	if extra := toolResultLine(name, args, res); extra != "" {
-		ls.note(extra)
 	}
 	return res
 }
@@ -772,7 +1079,50 @@ func (ls *loopState) nudgeFor(step int) string {
 	if ls.needsToolProof(step) {
 		return actNudge
 	}
+	if ls.needsSecurityReport(step) {
+		ls.secReportNudge++
+		return secReportNudge
+	}
 	return ""
+}
+
+// needsSecurityReport: stress / «сохрани md» without a successful write_security_report.
+// Live: model burned 12 steps on curl/catalog, then finished with a fake JSON tool call
+// and artifacts=0. One explicit prod before accepting the answer.
+func (ls *loopState) needsSecurityReport(step int) bool {
+	if ls.wroteSecReport || ls.secReportNudge >= 1 || !hasPack(ls.packs, packSecops) {
+		return false
+	}
+	in := strings.ToLower(ls.task.Input)
+	needReport := strings.Contains(in, "write_security_report") ||
+		strings.Contains(in, "отчёт") || strings.Contains(in, "отчет") ||
+		strings.Contains(in, ".md") || strings.Contains(in, "результат") ||
+		strings.Contains(in, "тест на прочность") || strings.Contains(in, "runtime/browser/security") ||
+		strings.Contains(in, "пентест") || strings.Contains(in, "pentest")
+	return needReport && step >= 1
+}
+
+const secReportNudge = "Задача ещё НЕ закрыта: MD-отчёт не записан. Вызови write_security_report " +
+	"с target=URL цели и body=полный Markdown (дыры / где / как воспроизвести / как лечить). " +
+	"Файлы-доказательства — download_url (не read_url): он кладёт их в runtime/browser/security/evidence " +
+	"и даёт ссылку /api/files/… для скачивания в панели. Не пиши итог текстом без этого вызова. " +
+	"HTML-оболочка SPA на /admin,/wp-login,/server-status — НЕ доказательство утечки (soft-404)."
+
+func apiFilesRelFromText(s string) string {
+	const marker = "/api/files/"
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(marker):]
+	end := len(rest)
+	for j, r := range rest {
+		if r == ' ' || r == '\n' || r == '\r' || r == '\t' || r == '"' || r == '\'' {
+			end = j
+			break
+		}
+	}
+	return strings.TrimSpace(rest[:end])
 }
 
 // claimsNoTools reports whether the answer tells the user the agent lacks capabilities it
@@ -889,11 +1239,12 @@ func readNudge(didSearch bool) string {
 // resumeConfirmed continues a parked task. approved=false records a refusal for the model and
 // closes the task; approved=true executes ONLY the confirmed tool and returns to the loop.
 // Nothing already done is repeated: run_command is not idempotent, a written file is written.
-func resumeConfirmed(rs *resumeState, approved bool, status func(string)) agentResult {
+func resumeConfirmed(rs *resumeState, approved bool, status StatusFn) agentResult {
 	t := rs.task
 	p := rs.pending
 
-	if t.Context().Err() != nil {
+	// /stop cancels the wait context; a burned TaskTimeout must not block resume after park.
+	if st := t.GetStatus(); st == TaskCancelled || (t.Context().Err() != nil && st != TaskWaitingConfirm) {
 		t.SetStatus(TaskCancelled)
 		unregisterTask(t)
 		logTask(t, TaskCancelled, 0)
@@ -916,21 +1267,23 @@ func resumeConfirmed(rs *resumeState, approved bool, status func(string)) agentR
 		}
 	}()
 
+	t.armWorkContext()
 	t.SetStatus(TaskRunning)
 	t.Pending = nil
 
 	ls := &loopState{
-		task:    t,
-		cfg:     rs.cfg,
-		sess:    getBrowserSessionWithFFmpeg(rs.cfg.FfmpegPath),
-		msgs:    rs.msgs,
-		sys:     rs.sys,
-		packs:   rs.packs,
-		tools:   rs.tools,
-		plan:    dispatchPlan{Packs: rs.packs},
-		status:  status,
-		didRead: rs.didRead,
-		didSrch: rs.didSrch,
+		task:     t,
+		cfg:      rs.cfg,
+		sess:     getBrowserSessionWithFFmpeg(rs.cfg.FfmpegPath),
+		msgs:     rs.msgs,
+		sys:      rs.sys,
+		packs:    rs.packs,
+		tools:    rs.tools,
+		plan:     dispatchPlan{Packs: rs.packs, Summary: "", Plan: nil},
+		status:   status,
+		didRead:  rs.didRead,
+		didSrch:  rs.didSrch,
+		usedTool: rs.usedTool,
 	}
 
 	tc := toolCall{ID: p.ToolCallID}
@@ -957,8 +1310,28 @@ func resumeConfirmed(rs *resumeState, approved bool, status func(string)) agentR
 		}
 	}
 
+	// Re-classify under the CURRENT hands mode before executing — mode may have flipped
+	// while the question was pending.
+	actor := t.Actor
+	actor.Mode = currentHandsMode()
+	t.Actor = actor
+	now := guardToolCall(actor, p.Tool, p.Args)
+	if now.Action == ActionHardBlock || now.Action == ActionDeny {
+		logHands(t, p.Tool, tc.Function.Arguments, now, "denied", string(StatusDenied), "режим изменился после подтверждения")
+		ls.appendToolMsg(tc, deniedResult(now.Reason))
+		t.SetStatus(TaskCancelled)
+		arts := t.TakeArtifacts()
+		logTask(t, TaskCancelled, len(arts))
+		return agentResult{
+			Text:      "🚫 После подтверждения действие уже нельзя: " + now.Reason,
+			Artifacts: arts,
+			Status:    TaskCancelled,
+			TaskID:    t.ID,
+		}
+	}
+
 	if status != nil {
-		status("✅ Подтверждено — выполняю только это действие.")
+		status(statusInfo("✅ Подтверждено — выполняю только это действие."))
 	}
 	res := ls.runTool(tc, p.Tool, p.Args)
 	exitText := ""
@@ -1031,6 +1404,8 @@ func executorSystemPrompt(plan dispatchPlan, actor Actor) string {
 			"пиши команду напрямую: `Get-Date`, `Get-ChildItem D:\\ -Directory`. " +
 			"Двойная обёртка ломает экранирование кавычек и портит кириллицу в выводе.\n" +
 			"Не создавай временные .ps1-файлы ради одной команды — выполняй её одной строкой.\n" +
+			"HTTP API (GET JSON) с Bearer-токеном — http_get(url, authorization), НЕ curl/Invoke-WebRequest " +
+			"в run_command: длинный JWT внутри shell-строки ломает JSON tool-call.\n" +
 			"Команды, открывающие ОКНА или ждущие ввода, зависают до таймаута и ничего не возвращают: " +
 			"`slmgr` без `/dlv`, `msg`, `notepad`, `pause`, `Read-Host`, любые мастера установки. " +
 			"Бери консольные аналоги: статус лицензии — `Get-CimInstance SoftwareLicensingProduct | " +
@@ -1041,6 +1416,16 @@ func executorSystemPrompt(plan dispatchPlan, actor Actor) string {
 	}
 	if hasPack(plan.Packs, packMedia) {
 		b.WriteString(mediaPackRules)
+	}
+	if hasPack(plan.Packs, packSecops) {
+		b.WriteString("\n\nSecops: финал задачи — write_security_report(target=URL, body=Markdown). " +
+			"Без этого вызова отчёт не считается сданным. " +
+			"probe_url — только статус/заголовки/пути, НЕ тело JSON. Утечку API (/staff,/students,…) " +
+			"доказывай download_url (файл+кнопка /api/files/…) или http_get; в отчёт перенеси факты. " +
+			"Один и тот же URL probe_url'ом не долби — повтор движок пропустит. " +
+			"read_url/http_get НЕ сохраняют файл на диск. " +
+			"API с JWT — http_get(url, authorization=\"Bearer …\"), не curl в run_command. " +
+			"HTML-оболочка SPA на /.env — это soft-404, не утечка: download_url так и скажет.")
 	}
 	if hasPack(plan.Packs, packFiles) {
 		// read_file на PDF возвращает бинарный мусор: файл-то он прочитает, только внутри
@@ -1114,9 +1499,9 @@ func armouryNote(packs []string, mode string) string {
 		"- system — РАБОЧИЙ СТОЛ: скриншот всего экрана или окна, список открытых окон, " +
 		"фокус окна, печать текста и нажатие клавиш, мышь, процессы, запуск любых программ, буфер обмена\n" +
 		"- media — ВИДЕО и аудио: разобрать ролик, скачать, субтитры, ffmpeg; " +
-		"speak_text — озвучить фразу встроенным SuperTonic (женский голос, CPU)\n" +
+		"speak_text — озвучить фразу встроенным Qwen3-TTS (женский голос Serena, GPU)\n" +
 		"- trade — разбор тикера по Binance, сайзинг, журнал сделок\n" +
-		"- secops — разбор логов, скан на IOC, аудит файла\n" +
+		"- secops — логи, IOC, аудит файла, каталог Hacker Tools, probe_url, download_url (файл+ссылка /api/files), MD-отчёт\n" +
 		"Любой из них подключается ОДНИМ вызовом request_pack. Разрешение пользователя для этого " +
 		"НЕ нужно — не спрашивай его, просто вызови (до 3 раз за задачу).\n" +
 		hands + "\n" +
@@ -1124,7 +1509,7 @@ func armouryNote(packs []string, mode string) string {
 		"«нет доступа к интернету/консоли/рабочему столу/файлам», что ты «не видишь экран», " +
 		"«не можешь управлять мышью или клавиатурой», «не можешь запускать программы» или что ты " +
 		"«в изолированном режиме». Всё это неправда — перечисленное выше ты умеешь.\n" +
-		"Озвучка ответов УЖЕ встроена (SuperTonic). Если просят «озвучь / голосом / вслух» — " +
+		"Озвучка ответов УЖЕ встроена (Qwen3-TTS, GPU). Если просят «озвучь / голосом / вслух» — " +
 		"просто ответь текстом, движок сам прочитает ответ. Отдельный текст — speak_text. " +
 		"ЗАПРЕЩЕНО говорить, что TTS нет, и вызывать SAPI / Add-Type System.Speech / ffmpeg ради речи.\n" +
 		"ЗАПРЕЩЕНО перечислять пользователю свои ограничения вместо работы и предлагать ему " +
@@ -1163,7 +1548,7 @@ const mediaPackRules = `
   пути. Нужны точные формулировки или цитата — прочитай этот файл (пак files, read_file).
 - frames= задавай, когда важна КАРТИНКА: слайды, код на экране, интерфейс, «что там
   происходит». Каждый кадр — отдельный запрос к зрению, поэтому 3–6 кадров, а не 12.
-- «озвучь / скажи голосом» — speak_text (SuperTonic). Не SAPI, не ffmpeg, не convert_media.
+- «озвучь / скажи голосом» — speak_text (Qwen3-TTS). Не SAPI, не ffmpeg, не convert_media.
 - Если расшифровка пустая или речи нет — так и скажи. Придумывать содержание ролика по
   названию ЗАПРЕЩЕНО.
 - Дальше работай с расшифровкой как с обычным текстом: искать по ней проект на GitHub,
@@ -1214,7 +1599,8 @@ a) web_search или semantic_search
 b) read_url на 3–5 КОНКРЕТНЫХ URL из выдачи (статьи, не главные страницы)
 c) только потом ответ: факты + прямая ссылка на каждый
 Запрещено: выдумывать цифры; отвечать «следи за CoinDesk»; заканчивать после одного web_search без read_url.
-Если пользователь просит «прочитай/выжимку/подробнее» — бери URL из блока ниже или сделай новый поиск, НЕ проси ссылки у пользователя.`
+Если пользователь просит «прочитай/выжимку/подробнее» — бери URL из блока ниже или сделай новый поиск, НЕ проси ссылки у пользователя.
+API/JSON endpoint → http_get(url). С авторизацией: http_get(url, authorization="Bearer …"). Не собирай curl в run_command.`
 
 // agentBusyNotice is the answer a parallel request gets (§4: the agent is globally
 // single-threaded; a second task in the same chat is queued behind an honest "занят").

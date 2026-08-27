@@ -130,14 +130,14 @@ func TestAutoFrameCountRules(t *testing.T) {
 	longVideo := mediaInfo{Duration: 3600, Video: video.Video}
 	audioOnly := mediaInfo{Duration: 60}
 
-	if got := autoFrameCount(video, false); got != 6 {
-		t.Errorf("немой ролик: кадры единственный источник, ждали 6, получили %d", got)
+	if got := autoFrameCount(video, false); got != 8 {
+		t.Errorf("немой ролик: кадры единственный источник, ждали 8, получили %d", got)
 	}
-	if got := autoFrameCount(video, true); got != 3 {
-		t.Errorf("короткий ролик с речью: ждали 3 кадра, получили %d", got)
+	if got := autoFrameCount(video, true); got != 5 {
+		t.Errorf("короткий ролик с речью: ждали 5 кадров, получили %d", got)
 	}
-	if got := autoFrameCount(longVideo, true); got != 0 {
-		t.Errorf("длинный ролик с речью: кадры почти ничего не добавят, ждали 0, получили %d", got)
+	if got := autoFrameCount(longVideo, true); got != 4 {
+		t.Errorf("длинный ролик с речью: ждали 4 кадра (слайды), получили %d", got)
 	}
 	if got := autoFrameCount(audioOnly, true); got != 0 {
 		t.Errorf("только звук: кадров нет физически, ждали 0, получили %d", got)

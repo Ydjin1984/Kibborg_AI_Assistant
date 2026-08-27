@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"kibborg/engine/browser"
+	"kibborg/engine/secops"
 )
 
 //go:embed web/index.html
@@ -42,12 +43,29 @@ var (
 var startedAt = time.Now()
 
 // webCfg is the config the stateless handlers (registered without a cfg closure) read.
-// Set once in newWebMux before the server starts serving.
-var webCfg Config
+// Set in main() before the goroutines start AND refreshed in newWebMux; assignBrainModel
+// mutates ModelPath/MmprojPath from HTTP/download goroutines while handlers read them,
+// so every access goes through webCfgMu (curWebCfg / setWebCfg) — no data race.
+var (
+	webCfgMu sync.RWMutex
+	webCfg   Config
+)
+
+func setWebCfg(cfg Config) {
+	webCfgMu.Lock()
+	webCfg = cfg
+	webCfgMu.Unlock()
+}
+
+func curWebCfg() Config {
+	webCfgMu.RLock()
+	defer webCfgMu.RUnlock()
+	return webCfg
+}
 
 // newWebMux wires the dashboard routes (extracted so tests can drive it via httptest).
 func newWebMux(cfg Config) *http.ServeMux {
-	webCfg = cfg
+	setWebCfg(cfg)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -67,7 +85,7 @@ func newWebMux(cfg Config) *http.ServeMux {
 	// Parity with Telegram: browser agent + video download + local file delivery.
 	mux.HandleFunc("/api/browser", sameOriginGuard(func(w http.ResponseWriter, r *http.Request) { handleAPIBrowser(w, r, cfg) }))
 	mux.HandleFunc("/api/download_video", sameOriginGuard(func(w http.ResponseWriter, r *http.Request) { handleAPIDownloadVideo(w, r, cfg) }))
-	mux.HandleFunc("/api/files/", handleAPIFiles)
+	mux.HandleFunc("/api/files/", sameOriginGuard(handleAPIFiles))
 	// Agent controls (§9). These MUST stay behind sameOriginGuard: without it any page open
 	// in the same Chrome the agent itself drives could flip the hands to `full` — the
 	// cheapest possible bypass of the whole of chapter 6.
@@ -84,6 +102,8 @@ func newWebMux(cfg Config) *http.ServeMux {
 	// Каталог моделей и тест железа — вкладка «Модели» + /hw / /models в чате.
 	registerModelRoutes(mux)
 	registerTTSRoutes(mux)
+	// Кибербезопасность: каталог Hacker Tools + /stress twin.
+	registerSecurityRoutes(mux)
 	// Иконки кнопок вшиты в бинарь рядом со страницей.
 	mux.HandleFunc("/icons/", handleAPIIcons)
 	return mux
@@ -142,20 +162,21 @@ func handleAPIConfirm(w http.ResponseWriter, r *http.Request, cfg Config) {
 		return
 	}
 	var req struct {
-		Approve bool `json:"approve"`
+		Approve bool   `json:"approve"`
+		ID      string `json:"id"` // binds the click to the question the UI rendered
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "нужно поле approve", http.StatusBadRequest)
 		return
 	}
-	rs := takePending(webChatID)
+	rs := takePendingMatching(webChatID, req.ID)
 	if rs == nil {
-		writeJSON(w, map[string]any{"error": "Нечего подтверждать — вопрос уже снят."})
+		writeJSON(w, map[string]any{"error": "Нечего подтверждать — вопрос уже снят или это другой запрос."})
 		return
 	}
 	emit := ndjsonEmitter(w)
 	live.begin("agent-confirm")
-	res := resumeConfirmed(rs, req.Approve, func(s string) { emit(map[string]any{"status": s}) })
+	res := resumeConfirmed(rs, req.Approve, webStatus(emit))
 	live.finish(GenStats{})
 	emitAgentResult(emit, rs.task.Input, res, "")
 }
@@ -243,13 +264,15 @@ func handleAPIStatus(w http.ResponseWriter, cfg Config) {
 		}
 	}
 	ready := brainReady(cfg.BrainPort)
+	assigned := filepathBase(curWebCfg().ModelPath)
+	run := liveBrainModelNow()
 	writeJSON(w, map[string]any{
 		"brain_ready":   ready,
 		"brain_vision":  ready && brainHasVision(cfg.BrainPort), // true only when mmproj loaded
 		"brain_port":    cfg.BrainPort,
-		"model":         filepathBase(cfg.ModelPath),
-		"running_model": liveBrainModel,
-		"model_pending": liveBrainModel != "" && liveBrainModel != filepathBase(cfg.ModelPath),
+		"model":         assigned,
+		"running_model": run,
+		"model_pending": run != "" && assigned != "" && run != assigned,
 		"whisper":       whisper,
 		"voice_backend": voiceBackendLabel(cfg),
 		"typewhisper":   typeWhisperReady(cfg),
@@ -262,9 +285,12 @@ func handleAPIStatus(w http.ResponseWriter, cfg Config) {
 		"activity":      live.snapshot(),
 		// Окно контекста: сколько занято сейчас и сколько всего. Раньше этих чисел не было
 		// нигде, и «сколько ещё влезет» пользователь мог только угадывать.
-		"context": contextSnapshot(cfg, webChatID),
-		"hands":   map[string]any{"mode": currentHandsMode(), "short": handsModeShort(currentHandsMode())},
-		"tts":     map[string]any{"mode": currentTTSMode(), "short": ttsModeShort(currentTTSMode()), "status": ttsStatus(cfg)},
+		"context":      contextSnapshot(cfg, webChatID),
+		"hands":        map[string]any{"mode": currentHandsMode(), "short": handsModeShort(currentHandsMode())},
+		"tts":          map[string]any{"mode": currentTTSMode(), "short": ttsModeShort(currentTTSMode()), "status": ttsStatus(cfg)},
+		"download":     downloadSnapshot(),
+		"brain_switch": switchSnapshot(),
+		"local_models": localModelCards(),
 	})
 }
 
@@ -435,7 +461,7 @@ func routeWebMessage(w http.ResponseWriter, cfg Config, msg, transcript string) 
 			}
 			emit := ndjsonEmitter(w)
 			live.begin("agent-confirm")
-			res := resumeConfirmed(rs, yes, func(s string) { emit(map[string]any{"status": s}) })
+			res := resumeConfirmed(rs, yes, webStatus(emit))
 			live.finish(GenStats{})
 			emitAgentResult(emit, rs.task.Input, res, transcript)
 			return true
@@ -533,6 +559,38 @@ func routeWebMessage(w http.ResponseWriter, cfg Config, msg, transcript string) 
 		webChatReply(w, handleScanCommand(cfg, arg))
 		return true
 	}
+	if is, _ := parseCommand(msg, auditCommands); is {
+		webChatReply(w,
+			"🧬 Пришли файл документом с подписью `/audit` — посчитаю SHA256/SHA1/MD5, энтропию и тип (детект упаковки/шифрования). Для скана текста на IOC — `/scan <текст>`.\n"+
+				"Тест сайта на прочность: `/stress https://example.com`.")
+		return true
+	}
+	if is, stressArg := parseCommand(msg, stressCommands); is {
+		target, focus, mode := splitStressArg(stressArg)
+		if target == "" {
+			webChatReply(w, stressHelpText())
+			return true
+		}
+		if !brainReady(cfg.BrainPort) {
+			webChatReply(w, "⏳ Модель ещё грузится. Повтори запрос чуть позже.")
+			return true
+		}
+		task := stressAuditTask(target, focus, "", mode)
+		emit := ndjsonEmitter(w)
+		live.begin("security-audit")
+		actor := actorFor(channelWeb, webChatID, true)
+		base := withMemory(cfg, webChatID, task, baseMessages(webChatID))
+		res := runLayeredAgent(agentRequest{
+			cfg: cfg, actor: actor, baseMsgs: base, input: task,
+			status:     webStatus(emit),
+			memSummary: memorySummaryFor(webChatID),
+			hintPacks:  stressHintPacks(mode),
+		})
+		live.finish(GenStats{})
+		emitAgentResult(emit, task, res, "")
+		maybeAutoCompact(cfg, webChatID, nil)
+		return true
+	}
 	// Parity with Telegram: standalone /chart arms the next image upload.
 	if isChart, extra := parseCommand(msg, chartCommands); isChart {
 		webChartMu.Lock()
@@ -543,11 +601,13 @@ func routeWebMessage(w http.ResponseWriter, cfg Config, msg, transcript string) 
 		return true
 	}
 	if strings.HasPrefix(strings.ToLower(msg), "/reset") {
+		resetChatContext(webChatID)
 		webChartMu.Lock()
 		webChartOn = false
 		webChartPending = ""
 		webChartMu.Unlock()
-		return false // let the normal reset path answer
+		webChatReply(w, "♻️ Контекст диалога и долговременная память очищены.")
+		return true
 	}
 	if wantsToolAgent(msg) {
 		// Free text — typed or spoken — ALWAYS goes to the layered agent.
@@ -571,6 +631,32 @@ func ndjsonEmitter(w http.ResponseWriter) func(map[string]any) {
 		if flusher != nil {
 			flusher.Flush()
 		}
+	}
+}
+
+// webStatus bridges agent StatusUpdate → NDJSON with phase/tool/args for the step ribbon.
+func webStatus(emit func(map[string]any)) StatusFn {
+	return func(u StatusUpdate) {
+		if emit == nil {
+			return
+		}
+		m := map[string]any{"status": u.Text}
+		if u.Phase != "" {
+			m["phase"] = u.Phase
+		}
+		if u.Tool != "" {
+			m["tool"] = u.Tool
+		}
+		if u.Args != "" {
+			m["args"] = u.Args
+		}
+		if u.Preview != "" {
+			m["preview"] = u.Preview
+		}
+		if u.Body != "" {
+			m["body"] = u.Body
+		}
+		emit(m)
 	}
 }
 
@@ -644,7 +730,7 @@ func streamWebAgent(w http.ResponseWriter, cfg Config, task, historyNote string,
 		actor:      actorFor(channelWeb, webChatID, true),
 		baseMsgs:   withMemory(cfg, webChatID, task, baseMessages(webChatID)),
 		input:      task,
-		status:     func(s string) { emit(map[string]any{"status": s}) },
+		status:     webStatus(emit),
 		memSummary: memorySummaryFor(webChatID),
 		hintPacks:  hintPacks,
 	})
@@ -731,7 +817,8 @@ func buildAttachmentMessages(cfg Config, text, name, mime string, data []byte) (
 
 	case mediaTextFile:
 		if !utf8.Valid(data) || bytesHaveNUL(data) {
-			return "", nil, "", fmt.Errorf("файл выглядит бинарным, а не текстом")
+			// Бинарник с «текстовым» расширением — сохраняем на диск, как mediaOther.
+			return attachmentSavedMessages(cfg, text, name, mime, data)
 		}
 		prompt := text
 		if prompt == "" {
@@ -752,8 +839,26 @@ func buildAttachmentMessages(cfg Config, text, name, mime string, data []byte) (
 			"[файл " + name + "] " + prompt, nil
 
 	default:
-		return "", nil, "", fmt.Errorf("не читаю этот формат: картинки (png/jpg/webp) → зрение; голос (webm/ogg/mp3/wav) → STT; текст/код (.go .py .md .txt .json …)")
+		// Word/Excel/zip/любой бинарник: путь на диске + агент сам выберет инструмент.
+		return attachmentSavedMessages(cfg, text, name, mime, data)
 	}
+}
+
+// attachmentSavedMessages stores an upload under runtime/browser/security/uploads and
+// hands the agent a path (+ /api/files link) instead of rejecting unknown formats.
+func attachmentSavedMessages(cfg Config, text, name, mime string, data []byte) (string, []map[string]any, string, error) {
+	saved, err := secops.SaveUpload(name, data)
+	if err != nil {
+		return "", nil, "", err
+	}
+	prompt := strings.TrimSpace(text)
+	if prompt == "" {
+		prompt = "Пользователь приложил файл. Разбери его по делу (что внутри, риски, что проверить)."
+	}
+	full := prompt + "\n\n" + secops.AttachmentBrief(name, mime, saved)
+	base := withMemory(cfg, webChatID, prompt, baseMessages(webChatID))
+	return prompt, append(base, map[string]any{"role": "user", "content": full}),
+		"[файл " + name + "] " + prompt, nil
 }
 
 func filepathExt(name string) string {
@@ -772,7 +877,7 @@ func handleAPIAnalyze(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "нужен параметр symbol", http.StatusBadRequest)
 		return
 	}
-	cfg := webCfg
+	cfg := curWebCfg()
 	report, err := analyzeTicker(symbol)
 	if err != nil {
 		writeJSON(w, map[string]any{"error": err.Error()})
@@ -827,7 +932,7 @@ func handleAPIReset(w http.ResponseWriter, r *http.Request) {
 	webChartOn = false
 	webChartPending = ""
 	webChartMu.Unlock()
-	writeJSON(w, map[string]any{"ok": true, "context": contextSnapshot(webCfg, webChatID)})
+	writeJSON(w, map[string]any{"ok": true, "context": contextSnapshot(curWebCfg(), webChatID)})
 }
 
 // handleAPIBrowser runs the same browser agent as Telegram /browser.
@@ -862,9 +967,7 @@ func handleWebBrowser(w http.ResponseWriter, cfg Config, task, transcript string
 	// Include web chat history + memory so follow-ups work (same as Telegram).
 	actor := actorFor(channelWeb, webChatID, true) // loopback + sameOriginGuard = owner
 	base := withMemory(cfg, webChatID, task, baseMessages(webChatID))
-	res := runAgent(cfg, actor, base, readFollowUpHint(webChatID, task), func(s string) {
-		emit(map[string]any{"status": s})
-	})
+	res := runAgent(cfg, actor, base, readFollowUpHint(webChatID, task), webStatus(emit))
 	live.finish(GenStats{})
 	emitAgentResult(emit, task, res, transcript)
 	maybeAutoCompact(cfg, webChatID, nil)
@@ -901,8 +1004,8 @@ func emitAgentResult(emit func(map[string]any), userText string, res agentResult
 	if transcript != "" {
 		payload["transcript"] = transcript // UI shows «🎙 Распознал: …», parity with Telegram
 	}
-	if shouldSpeakReply(webCfg, userText) {
-		if sf, err := synthesizeSpeech(webCfg, text); err != nil {
+	if shouldSpeakReply(curWebCfg(), userText) {
+		if sf, err := synthesizeSpeech(curWebCfg(), text); err != nil {
 			payload["tts_error"] = err.Error()
 		} else {
 			payload["tts_url"] = sf.URL

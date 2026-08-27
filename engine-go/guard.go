@@ -11,11 +11,19 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+// longHexToken collapses opaque hex blobs in shell fingerprints (not JWTs).
+var longHexToken = regexp.MustCompile(`(?i)\b[a-f0-9]{32,}\b`)
+
+// jwtLikeCI — same as jwtLike, but case-insensitive: fingerprint lowercases args first.
+var jwtLikeCI = regexp.MustCompile(`(?i)eyj[a-z0-9_-]{4,}\.[a-z0-9_-]{4,}\.[a-z0-9_-]{4,}`)
 
 // Action is what the gate decided to do with one tool call.
 type Action string
@@ -29,17 +37,18 @@ const (
 
 // Rule names (also written to hands.jsonl).
 const (
-	ruleNone           = ""
-	ruleProtectedPath  = "protected_path"
-	ruleOutsideAllow   = "outside_allowlist"
-	ruleUnparseableCmd = "unparseable_cmd"
-	ruleNuclear        = "nuclear"
-	ruleDangerousTool  = "dangerous_tool"
-	ruleMoney          = "money"
-	rulePackEscalation = "pack_escalation"
-	ruleDesktopInput   = "desktop_input"
-	ruleLaunch         = "launch_app"
-	ruleCriticalProc   = "critical_process"
+	ruleNone              = ""
+	ruleProtectedPath     = "protected_path"
+	ruleOutsideAllow      = "outside_allowlist"
+	ruleUnparseableCmd    = "unparseable_cmd"
+	ruleNuclear           = "nuclear"
+	ruleDangerousTool     = "dangerous_tool"
+	ruleMoney             = "money"
+	ruleControlledExploit = "controlled_exploit"
+	rulePackEscalation    = "pack_escalation"
+	ruleDesktopInput      = "desktop_input"
+	ruleLaunch            = "launch_app"
+	ruleCriticalProc      = "critical_process"
 )
 
 // Decision is the gate's verdict. Risk/Rule/Reason cost nothing and make the journal useful.
@@ -107,6 +116,11 @@ func guardToolCall(actor Actor, name string, args map[string]any) Decision {
 			d.Rule = ruleMoney
 			d.Reason = "операция с деньгами — подтверждение обязательно в любом режиме"
 		}
+		return ownerCheck(d, actor, true)
+	}
+	// sqlmap/hydra/hashcat/bloodhound: always ask, even with hands=full (user policy 2026-08-27).
+	if d.Rule == ruleControlledExploit {
+		d.Action = ActionAsk
 		return ownerCheck(d, actor, true)
 	}
 	if full && risky {
@@ -194,18 +208,38 @@ func desktopInputReason(name string, args map[string]any) string {
 // guardKillProcess singles out the processes whose death takes Windows with them. Killing
 // lsass or csrss is an instant BSOD — that is a nuclear action, not a risky one, so in short
 // hands it is refused outright and in long hands it asks.
+//
+// PID-only kills resolve the image name first: otherwise `list_processes` + `kill_process(pid=)`
+// bypasses the critical-process map entirely.
 func guardKillProcess(args map[string]any) Decision {
 	name := strings.ToLower(strings.TrimSpace(argString(args, "name")))
 	name = strings.TrimSuffix(name, ".exe")
+	pid := int(argFloat(args, "pid"))
+	// Always resolve PID when given — never trust caller name alone (name=notepad + pid=lsass).
+	if pid > 0 {
+		resolved := lookupProcessName(pid)
+		if resolved == "" {
+			return blockD(ruleCriticalProc,
+				fmt.Sprintf("pid %d: имя процесса не определено — завершение без имени запрещено", pid))
+		}
+		resolved = strings.ToLower(strings.TrimSuffix(resolved, ".exe"))
+		if name != "" && name != resolved {
+			return blockD(ruleCriticalProc,
+				fmt.Sprintf("имя «%s» не совпадает с pid %d (%s) — отказ", name, pid, resolved))
+		}
+		name = resolved
+	}
 	if criticalProcesses[name] {
 		return blockD(ruleCriticalProc, "процесс "+name+" держит саму Windows — его завершение уронит систему")
 	}
-	if name == "" && argFloat(args, "pid") <= 0 {
+	if name == "" && pid <= 0 {
 		return askD(ruleDesktopInput, "завершение процесса: не указан ни pid, ни имя")
 	}
 	target := name
 	if target == "" {
-		target = fmt.Sprintf("pid %d", int(argFloat(args, "pid")))
+		target = fmt.Sprintf("pid %d", pid)
+	} else if pid > 0 {
+		target = fmt.Sprintf("%s (pid %d)", name, pid)
 	}
 	return askD(ruleDesktopInput, "завершение процесса "+target)
 }
@@ -242,8 +276,19 @@ func guardCommand(command, cwd string) Decision {
 	if reason, ok := nuclearCommand(norm); ok {
 		return blockD(ruleNuclear, "ядерная команда: "+reason)
 	}
+	// Shell process killers bypass kill_process — classify them here.
+	if d, ok := guardShellProcessKill(norm); ok {
+		return d
+	}
+	if tool, ok := controlledExploitCommand(norm); ok {
+		return askD(ruleControlledExploit,
+			"controlled exploit («"+tool+"») — подтверждение обязательно в любом режиме рук; не часть /stress full без явной просьбы")
+	}
 	if marker, ok := unparseableCommand(norm); ok {
 		return askD(ruleUnparseableCmd, "не могу классифицировать команду ("+marker+")")
+	}
+	if marker, ok := opaqueScriptInvocation(norm); ok {
+		return askD(ruleUnparseableCmd, "непрозрачный скрипт ("+marker+") — не вижу тело команды")
 	}
 
 	for _, seg := range commandSegments(norm) {
@@ -295,40 +340,147 @@ func commandSegments(norm string) []string {
 	return out
 }
 
-// nuclearExe are commands that are never acceptable — not even in full mode (§6.2).
-var nuclearExe = map[string]string{
-	"diskpart": "diskpart (переразметка диска)",
-	"bcdedit":  "bcdedit (загрузчик)",
-	"format":   "format (форматирование тома)",
-	"mkfs":     "mkfs (создание ФС)",
-	"fdisk":    "fdisk (разметка диска)",
-	"reboot":   "перезагрузка ПК",
-	"halt":     "остановка ПК",
-	"poweroff": "выключение ПК",
+// controlledExploitExe — offensive / credential / AD collect CLIs. Always ask (even hands=full).
+// Matching is on the executable basename inside run_command (sqlmap.cmd → sqlmap).
+var controlledExploitExe = map[string]bool{
+	"sqlmap": true, "sqlmap.py": true,
+	"hydra": true, "thc-hydra": true,
+	"hashcat":    true,
+	"bloodhound": true, "sharphound": true, "azurehound": true,
 }
 
-// nuclearCommand reports whether the line destroys the machine or the disk.
-func nuclearCommand(norm string) (string, bool) {
+func controlledExploitCommand(norm string) (string, bool) {
 	for _, seg := range commandSegments(norm) {
 		fields := strings.Fields(seg)
 		if len(fields) == 0 {
 			continue
 		}
-		exe := strings.TrimSuffix(strings.TrimSuffix(fields[0], ".exe"), ".com")
-		exe = filepath.Base(exe)
-		if reason, ok := nuclearExe[exe]; ok {
+		for _, tok := range fields {
+			base := nuclearTok(tok)
+			base = strings.TrimSuffix(base, ".cmd")
+			base = strings.TrimSuffix(base, ".bat")
+			base = strings.TrimSuffix(base, ".exe")
+			base = strings.TrimSuffix(base, ".py")
+			if controlledExploitExe[base] || controlledExploitExe[base+".py"] {
+				return base, true
+			}
+			// "python …/sqlmap.py" / "python …/jwt_tool.py" — only flag sqlmap path here;
+			// jwt_tool is detect-oriented and stays outside this gate.
+			if strings.Contains(tok, "sqlmap") {
+				return "sqlmap", true
+			}
+			if strings.Contains(tok, "hashcat") {
+				return "hashcat", true
+			}
+			if strings.Contains(tok, "bloodhound") || strings.Contains(tok, "sharphound") {
+				return "bloodhound", true
+			}
+		}
+	}
+	return "", false
+}
+
+// nuclearExe are commands that are never acceptable — not even in full mode (§6.2).
+var nuclearExe = map[string]string{
+	"diskpart":         "diskpart (переразметка диска)",
+	"bcdedit":          "bcdedit (загрузчик)",
+	"format":           "format (форматирование тома)",
+	"format-volume":    "Format-Volume (форматирование тома)",
+	"clear-disk":       "Clear-Disk (очистка диска)",
+	"initialize-disk":  "Initialize-Disk (инициализация диска)",
+	"mkfs":             "mkfs (создание ФС)",
+	"fdisk":            "fdisk (разметка диска)",
+	"reboot":           "перезагрузка ПК",
+	"halt":             "остановка ПК",
+	"poweroff":         "выключение ПК",
+	"shutdown":         "выключение/перезагрузка ПК",
+	"stop-computer":    "выключение ПК",
+	"restart-computer": "перезагрузка ПК",
+}
+
+// nuclearCommand reports whether the line destroys the machine or the disk.
+// Scans every segment AND unwraps cmd/powershell wrappers so
+// `cmd /c format C:` cannot slip past as a leading "cmd" token.
+func nuclearCommand(norm string) (string, bool) {
+	for _, seg := range commandSegments(norm) {
+		if reason, ok := nuclearInSegment(seg); ok {
 			return reason, true
 		}
-		switch exe {
-		case "shutdown", "stop-computer", "restart-computer":
-			return "выключение/перезагрузка ПК", true
+	}
+	return "", false
+}
+
+func nuclearInSegment(seg string) (string, bool) {
+	fields := strings.Fields(seg)
+	if len(fields) == 0 {
+		return "", false
+	}
+	chains := [][]string{fields}
+	if inner := unwrapShellPayload(fields); len(inner) > 0 {
+		chains = append(chains, inner)
+	}
+	for _, toks := range chains {
+		if reason, ok := nuclearTokens(toks); ok {
+			return reason, true
 		}
-		// Wiping a drive root: `rm -rf /`, `del /f /s /q c:\`, `remove-item c:\ -recurse`.
-		if isDeleteVerb(exe) {
-			for _, tok := range fields[1:] {
-				if isDriveRoot(strings.Trim(tok, `"'`)) {
-					return "снос корня диска (" + tok + ")", true
-				}
+	}
+	return "", false
+}
+
+// unwrapShellPayload returns the command after cmd /c or powershell -Command, if present.
+func unwrapShellPayload(fields []string) []string {
+	if len(fields) < 2 {
+		return nil
+	}
+	exe := nuclearTok(fields[0])
+	switch exe {
+	case "cmd":
+		for i := 1; i < len(fields)-1; i++ {
+			switch fields[i] {
+			case "/c", "/k":
+				return fields[i+1:]
+			}
+		}
+	case "powershell", "pwsh":
+		for i := 1; i < len(fields)-1; i++ {
+			switch fields[i] {
+			case "-command", "-c", "-encodedcommand", "-enc", "-e", "-en", "-ec", "-encod":
+				return fields[i+1:]
+			}
+		}
+	}
+	return nil
+}
+
+func nuclearTok(tok string) string {
+	t := strings.Trim(tok, `"'`)
+	t = strings.TrimSuffix(strings.TrimSuffix(t, ".exe"), ".com")
+	return filepath.Base(t)
+}
+
+func nuclearTokens(fields []string) (string, bool) {
+	if len(fields) == 0 {
+		return "", false
+	}
+	// Leading exe (classic path).
+	if reason, ok := nuclearExe[nuclearTok(fields[0])]; ok {
+		return reason, true
+	}
+	// Non-leading: wrappers put the real verb later (`cmd /c format C:`).
+	for _, tok := range fields[1:] {
+		base := nuclearTok(tok)
+		if reason, ok := nuclearExe[base]; ok {
+			return reason, true
+		}
+	}
+	// Wiping a drive root: `rm -rf /`, `del /f /s /q c:\`, `remove-item c:\ -recurse`.
+	for i, tok := range fields {
+		if !isDeleteVerb(nuclearTok(tok)) {
+			continue
+		}
+		for _, tgt := range fields[i+1:] {
+			if isDriveRoot(strings.Trim(tgt, `"'`)) {
+				return "снос корня диска (" + tgt + ")", true
 			}
 		}
 	}
@@ -353,6 +505,97 @@ func isDriveRoot(tok string) bool {
 		return tok != "" // "/", "/*", "\" all collapse to "" and all mean the root
 	}
 	return len(t) == 2 && t[1] == ':' && t[0] >= 'a' && t[0] <= 'z'
+}
+
+// guardShellProcessKill catches taskkill / Stop-Process / wmic process delete / kill —
+// paths that bypass the kill_process tool and its critical-process map.
+func guardShellProcessKill(norm string) (Decision, bool) {
+	for _, seg := range commandSegments(norm) {
+		fields := strings.Fields(seg)
+		if len(fields) == 0 {
+			continue
+		}
+		chains := [][]string{fields}
+		if inner := unwrapShellPayload(fields); len(inner) > 0 {
+			chains = append(chains, inner)
+		}
+		for _, toks := range chains {
+			if len(toks) == 0 {
+				continue
+			}
+			exe := nuclearTok(toks[0])
+			joined := strings.Join(toks, " ")
+			critical := shellKillTargetsCritical(joined)
+			switch exe {
+			case "taskkill", "stop-process", "kill", "pkill", "killall":
+				if critical {
+					return blockD(ruleCriticalProc, "убийство критического процесса через "+exe), true
+				}
+				return askD(ruleDesktopInput, "завершение процесса через "+exe), true
+			case "wmic":
+				if strings.Contains(joined, "process") && strings.Contains(joined, "delete") {
+					if critical {
+						return blockD(ruleCriticalProc, "убийство критического процесса через wmic"), true
+					}
+					return askD(ruleDesktopInput, "завершение процесса через wmic"), true
+				}
+			}
+		}
+	}
+	return Decision{}, false
+}
+
+func shellKillTargetsCritical(joined string) bool {
+	for name := range criticalProcesses {
+		if strings.Contains(joined, name+".exe") || strings.Contains(joined, " "+name+" ") ||
+			strings.Contains(joined, "name="+name) || strings.Contains(joined, "name='"+name) ||
+			strings.Contains(joined, `name="`+name) || strings.HasSuffix(joined, " "+name) ||
+			strings.Contains(joined, "/im "+name) || strings.Contains(joined, "/im \""+name) {
+			return true
+		}
+	}
+	return false
+}
+
+// opaqueScriptInvocation asks when the real payload is hidden inside a script file.
+func opaqueScriptInvocation(norm string) (string, bool) {
+	for _, seg := range commandSegments(norm) {
+		fields := strings.Fields(seg)
+		if len(fields) == 0 {
+			continue
+		}
+		chains := [][]string{fields}
+		if inner := unwrapShellPayload(fields); len(inner) > 0 {
+			chains = append(chains, inner)
+		}
+		for _, toks := range chains {
+			if len(toks) == 0 {
+				continue
+			}
+			exe := nuclearTok(toks[0])
+			switch exe {
+			case "powershell", "pwsh":
+				for _, t := range toks[1:] {
+					switch t {
+					case "-file", "-f":
+						return "powershell -File", true
+					}
+				}
+			}
+			for _, t := range toks {
+				low := strings.ToLower(strings.Trim(t, `"'`))
+				if strings.HasSuffix(low, ".ps1") || strings.HasSuffix(low, ".bat") ||
+					strings.HasSuffix(low, ".cmd") || strings.HasSuffix(low, ".vbs") ||
+					strings.HasSuffix(low, ".wsf") {
+					return "скрипт " + filepath.Base(low), true
+				}
+			}
+			if exe == "cscript" || exe == "wscript" {
+				return exe, true
+			}
+		}
+	}
+	return "", false
 }
 
 // unparseableMarkers are the forms the deterministic checks cannot read. In safe mode they
@@ -640,6 +883,10 @@ func insideHandsRoots(abs string) bool {
 // toolFingerprint identifies one concrete INTENTION: tool + normalized arguments. failCount
 // keyed by tool name alone would silence delete_path(B) because delete_path(A) was denied —
 // different intentions, wrong behaviour (§4.2).
+//
+// Live: probe_url(staff) ×8 and near-identical run_command(JWT+Invoke-WebRequest) ×5 burned
+// whole secops budgets. URLs and shell commands are normalized so tiny cosmetic diffs
+// (trailing slash, JWT re-paste) do not reopen the same intention.
 func toolFingerprint(name string, args map[string]any) string {
 	if len(args) == 0 {
 		return name
@@ -657,6 +904,15 @@ func toolFingerprint(name string, args map[string]any) string {
 		switch t := v.(type) {
 		case string:
 			s = strings.ToLower(strings.TrimSpace(t))
+			switch k {
+			case "url", "href", "link", "target":
+				s = normalizeURLFingerprint(s)
+			case "command", "cmd":
+				s = scrubCommandFingerprint(s)
+			case "path", "file", "input":
+				s = strings.ReplaceAll(s, `/`, `\`)
+				s = strings.TrimRight(s, `\`)
+			}
 		default:
 			raw, _ := json.Marshal(t)
 			s = strings.ToLower(string(raw))
@@ -664,6 +920,36 @@ func toolFingerprint(name string, args map[string]any) string {
 		fmt.Fprintf(&b, "|%s=%s", k, s)
 	}
 	return b.String()
+}
+
+func normalizeURLFingerprint(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return raw
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	u.Fragment = ""
+	host := strings.TrimPrefix(u.Host, "www.")
+	path := strings.TrimRight(u.EscapedPath(), "/")
+	out := u.Scheme + "://" + host + path
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	return out
+}
+
+// scrubCommandFingerprint collapses JWTs / long hex so re-pasted tokens do not create a
+// "new" fingerprint for the same Invoke-WebRequest skeleton.
+func scrubCommandFingerprint(cmd string) string {
+	cmd = jwtLikeCI.ReplaceAllString(cmd, "<jwt>")
+	cmd = longHexToken.ReplaceAllString(cmd, "<hex>")
+	return strings.Join(strings.Fields(cmd), " ")
 }
 
 // argString reads a string argument the same way browser.argStr does (tools receive raw JSON).
